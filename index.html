@@ -1035,6 +1035,7 @@ function showSRTPanel() {
         <button id="start-vocab-tts" onclick="startVocabTTS()" disabled>Bắt đầu đọc từ vựng</button>
         <button id="pause-vocab-tts" onclick="pauseVocabTTS()" disabled>Tạm dừng</button>
         <button id="stop-vocab-tts" onclick="stopVocabTTS()" disabled>Dừng hẳn</button>
+        <span style="font-size:12px;color:#666;">Tốc độ từ vựng cố định: 0.85</span>
     </div>
     <div style="margin-bottom: 10px;">
         <label>
@@ -1089,6 +1090,8 @@ function showSRTPanel() {
         let vocabTTSTimeout;
         let isVocabTTSPaused = false;
         let pausedVocabIndex = -1;
+        const VOCAB_TTS_RATE = 0.85;
+        let vocabTTSRunToken = 0;
         let vocabDisplayMode = false;
         // Các mốc phụ đề được ghim khi người dùng nhấp trực tiếp vào từ.
         let vocabReplayActive = false;
@@ -1205,7 +1208,7 @@ function showSRTPanel() {
                         youtubePlayer.playVideo();
                         highlightSubtitle(matchIndex);
                         if (vocabTTSMode) {
-                            readTextDual(`${word.korean} - ${word.meaning}`);
+                            readTextDual(`${word.korean} - ${word.meaning}`, null, VOCAB_TTS_RATE);
                        }
                    } else {
                         alert("Không tìm thấy từ gần giống trong phụ đề");
@@ -2187,7 +2190,7 @@ function showSRTPanel() {
             }
         }
 
-        function speakVietnamese(text, callback) {
+        function speakVietnamese(text, callback, speed = ttsSpeed) {
             if (!text) { callback?.(); return; }
 
             if (vietnameseTTSMode === "online") {
@@ -2202,7 +2205,7 @@ function showSRTPanel() {
                     const audio = new Audio(url);
                     onlineTTSVoice = audio;
                     audio.volume = Math.max(0, Math.min(1, ttsVolume));
-                    audio.playbackRate = Math.max(0.5, Math.min(2.5, ttsSpeed));
+                    audio.playbackRate = Math.max(0.5, Math.min(2.5, speed));
 
                     let done = false;
                     const finish = () => {
@@ -2211,28 +2214,28 @@ function showSRTPanel() {
                         if (onlineTTSVoice === audio) onlineTTSVoice = null;
                         callback?.();
                     };
-                    audio.onended = finish;
-                    audio.onerror = () => {
+                    const fallbackToOffline = () => {
+                        if (done) return;
+                        done = true;
                         if (onlineTTSVoice === audio) onlineTTSVoice = null;
                         console.warn("Online TTS lỗi, chuyển sang Offline.");
-                        speakVietnameseOffline(cleanText, callback);
+                        speakVietnameseOffline(cleanText, callback, speed);
                     };
+                    audio.onended = finish;
+                    audio.onerror = fallbackToOffline;
                     const promise = audio.play();
                     if (promise?.catch) {
-                        promise.catch(() => {
-                            if (onlineTTSVoice === audio) onlineTTSVoice = null;
-                            speakVietnameseOffline(cleanText, callback);
-                        });
+                        promise.catch(fallbackToOffline);
                     }
                     return;
                 } catch (e) {
                     console.warn("Online TTS lỗi, chuyển sang Offline:", e);
                 }
             }
-            speakVietnameseOffline(text, callback);
+            speakVietnameseOffline(text, callback, speed);
         }
 
-        function speakVietnameseOffline(text, callback) {
+        function speakVietnameseOffline(text, callback, speed = ttsSpeed) {
             try {
                 if (typeof speechSynthesis === "undefined" || !speechSynthesis) {
                     alert("Thiết bị/trình duyệt không hỗ trợ TTS Offline.");
@@ -2241,14 +2244,20 @@ function showSRTPanel() {
                 }
                 const utterance = new SpeechSynthesisUtterance(text);
                 utterance.lang = "vi-VN";
-                utterance.rate = ttsSpeed;
+                utterance.rate = speed;
                 utterance.volume = ttsVolume;
                 const voices = speechSynthesis.getVoices() || [];
                 const vi = voices.find(v => v.lang === "vi-VN") ||
                            voices.find(v => v.lang && v.lang.toLowerCase().startsWith("vi"));
                 if (vi) utterance.voice = vi;
-                utterance.onend = () => callback?.();
-                utterance.onerror = () => callback?.();
+                let done = false;
+                const finish = () => {
+                    if (done) return;
+                    done = true;
+                    callback?.();
+                };
+                utterance.onend = finish;
+                utterance.onerror = finish;
                 speechSynthesis.speak(utterance);
             } catch (e) {
                 console.error("Lỗi TTS Offline:", e);
@@ -2861,28 +2870,38 @@ function showSRTPanel() {
             return text.replace(/\[[^\]]*\]/g, '').trim();
        }
 
-        function readTextDual(text, callback) {
+        function readTextDual(text, callback, speed = VOCAB_TTS_RATE) {
             const cleanedText = removeBracketsContent(text);
-            const parts = cleanedText.split("-");
-            const koreanPart = parts[0] ? parts[0].trim() : "";
-            const vietnamesePart = parts[1] ? parts[1].trim() : "";
+            const separatorIndex = cleanedText.indexOf(" - ");
+            const koreanPart = separatorIndex >= 0
+                ? cleanedText.slice(0, separatorIndex).trim()
+                : cleanedText.trim();
+            const vietnamesePart = separatorIndex >= 0
+                ? cleanedText.slice(separatorIndex + 3).trim()
+                : "";
 
             if (koreanPart) {
-                const koUtterance = new SpeechSynthesisUtterance(koreanPart);
-                koUtterance.lang = "ko-KR";
-                koUtterance.rate = ttsSpeed;
-                koUtterance.volume = ttsVolume;
-                koUtterance.onend = () => {
-                    if (vietnamesePart) speakVietnamese(vietnamesePart, callback);
+                try {
+                    const koUtterance = new SpeechSynthesisUtterance(koreanPart);
+                    koUtterance.lang = "ko-KR";
+                    koUtterance.rate = speed;
+                    koUtterance.volume = ttsVolume;
+                    let koreanDone = false;
+                    const finishKorean = () => {
+                        if (koreanDone) return;
+                        koreanDone = true;
+                        if (vietnamesePart) speakVietnamese(vietnamesePart, callback, speed);
+                        else callback?.();
+                    };
+                    koUtterance.onend = finishKorean;
+                    koUtterance.onerror = finishKorean;
+                    speechSynthesis.speak(koUtterance);
+                } catch (e) {
+                    if (vietnamesePart) speakVietnamese(vietnamesePart, callback, speed);
                     else callback?.();
-                };
-                koUtterance.onerror = () => {
-                    if (vietnamesePart) speakVietnamese(vietnamesePart, callback);
-                    else callback?.();
-                };
-                speechSynthesis.speak(koUtterance);
+                }
             } else if (vietnamesePart) {
-                speakVietnamese(vietnamesePart, callback);
+                speakVietnamese(vietnamesePart, callback, speed);
             } else {
                 callback?.();
             }
@@ -3699,21 +3718,27 @@ function showSRTPanel() {
             isVocabTTSPaused = false;
             vocabTTSIndex = pausedVocabIndex >= 0 ? pausedVocabIndex : 0;
             pausedVocabIndex = -1;
-            readVocabItem(vocabItems);
+            const runToken = ++vocabTTSRunToken;
+            readVocabItem(vocabItems, runToken);
        }
 
-        function readVocabItem(vocabItems) {
-            if (vocabTTSIndex >= vocabItems.length || isVocabTTSPaused) return;
+        function readVocabItem(vocabItems, runToken = vocabTTSRunToken) {
+            if (runToken !== vocabTTSRunToken ||
+                vocabTTSIndex >= vocabItems.length ||
+                isVocabTTSPaused) return;
             const item = vocabItems[vocabTTSIndex];
             highlightCurrentVocabItem(vocabTTSIndex);
 
             const textToRead = `${item.korean} - ${item.vietnamese}`;
+            let itemDone = false;
             readTextDual(textToRead, () => {
+                if (itemDone || runToken !== vocabTTSRunToken) return;
+                itemDone = true;
                 vocabTTSIndex++;
                 if (vocabTTSIndex < vocabItems.length && !isVocabTTSPaused) {
-                    vocabTTSTimeout = setTimeout(() => readVocabItem(vocabItems), 500);
+                    vocabTTSTimeout = setTimeout(() => readVocabItem(vocabItems, runToken), 500);
                }
-           });
+           }, VOCAB_TTS_RATE);
        }
 
         function highlightCurrentVocabItem(index) {
@@ -3731,6 +3756,7 @@ function showSRTPanel() {
                 isVocabTTSPaused ? "Tiếp tục" : "Tạm dừng";
             if (isVocabTTSPaused) {
                 pausedVocabIndex = vocabTTSIndex;
+                vocabTTSRunToken++;
                 speechSynthesis.cancel();
                 clearTimeout(vocabTTSTimeout);
            } else {
@@ -3742,6 +3768,7 @@ function showSRTPanel() {
             isVocabTTSPaused = false;
             vocabTTSIndex = -1;
             pausedVocabIndex = -1;
+            vocabTTSRunToken++;
             speechSynthesis.cancel();
             clearTimeout(vocabTTSTimeout);
             highlightCurrentVocabItem(-1);
@@ -4930,3 +4957,4 @@ window.deleteCloudData = async function() {
 
 </body>
 </html>
+
