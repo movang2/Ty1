@@ -1042,6 +1042,15 @@ function showSRTPanel() {
             Bật tra từ trên Naver
         </label>
     </div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0;">
+        <button type="button" onclick="replayPinnedSubtitleSegments()" style="background:#1976d2;color:white;border:none;padding:7px 10px;border-radius:5px;cursor:pointer;">
+            ▶ Xem lại các đoạn đã ghim
+        </button>
+        <button type="button" onclick="clearAllVocab()" style="background:#f44336;color:white;border:none;padding:7px 10px;border-radius:5px;cursor:pointer;">
+            🗑️ Xóa tất cả từ vựng đã tra
+        </button>
+        <span id="vocab-replay-status" style="font-size:12px;color:#555;"></span>
+    </div>
     <div id="vocab-list"></div>
     <h3>Phụ đề yêu thích</h3>
     <button onclick="clearAllFavorites()">Xóa tất cả phụ đề yêu thích</button>
@@ -1081,6 +1090,10 @@ function showSRTPanel() {
         let isVocabTTSPaused = false;
         let pausedVocabIndex = -1;
         let vocabDisplayMode = false;
+        // Các mốc phụ đề được ghim khi người dùng nhấp trực tiếp vào từ.
+        let vocabReplayActive = false;
+        let vocabReplayTimer = null;
+        let vocabReplayToken = 0;
          let translationInProgress = false;
          let translationPaused = false;
          let translationPauseWaiters = [];
@@ -1389,7 +1402,7 @@ function showSRTPanel() {
                     onStateChange: (event) => {
                         // Luyện nghe tự điều khiển TTS/video. Không để cơ chế cũ
                         // tự khởi động TTS song song trong lúc phát lại nhóm.
-                        if (listeningPracticeActive) return;
+                        if (listeningPracticeActive || vocabReplayActive) return;
                         if (event.data === YT.PlayerState.PLAYING) {
                             startReading();
                         } else if (event.data === YT.PlayerState.PAUSED || event.data === YT.PlayerState.ENDED) {
@@ -1742,25 +1755,236 @@ function showSRTPanel() {
             document.getElementById("vocab-info-display").innerHTML = "👉 Nhấp vào từ vựng được tô màu trong phụ đề để xem chi tiết";
        }
 
+        function formatPinnedSubtitleTime(seconds) {
+            const safeSeconds = Math.max(0, Number(seconds) || 0);
+            const hours = Math.floor(safeSeconds / 3600);
+            const minutes = Math.floor((safeSeconds % 3600) / 60);
+            const wholeSeconds = Math.floor(safeSeconds % 60);
+            const milliseconds = Math.floor((safeSeconds - Math.floor(safeSeconds)) * 1000);
+            return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(wholeSeconds).padStart(2, "0")},${String(milliseconds).padStart(3, "0")}`;
+        }
+
+        function ensureVocabSubtitleAnchors(item) {
+            if (!item) return [];
+            if (!Array.isArray(item.savedIndexes)) item.savedIndexes = [];
+            const hasExplicitAnchors = Object.prototype.hasOwnProperty.call(item, "subtitleAnchors");
+            if (!Array.isArray(item.subtitleAnchors)) item.subtitleAnchors = [];
+            if (hasExplicitAnchors) return item.subtitleAnchors;
+
+            const knownIndexes = new Set(
+                item.subtitleAnchors
+                    .map(anchor => Number(anchor?.subtitleIndex))
+                    .filter(Number.isInteger)
+            );
+
+            // Nâng cấp dữ liệu cũ: các savedIndexes trước đây cũng được xem là mốc
+            // phụ đề, nhưng từ nay mốc mới luôn lưu đủ start/end time.
+            item.savedIndexes.forEach(index => {
+                const subtitleIndex = Number(index);
+                const sub = subtitleData[subtitleIndex];
+                if (!sub || knownIndexes.has(subtitleIndex)) return;
+                item.subtitleAnchors.push({
+                    subtitleIndex,
+                    startTime: Number(sub.startTime) || 0,
+                    endTime: Number(sub.endTime) > Number(sub.startTime)
+                        ? Number(sub.endTime)
+                        : (Number(sub.startTime) || 0) + 2,
+                    koreanText: sub.koreanText || ""
+                });
+                knownIndexes.add(subtitleIndex);
+            });
+
+            return item.subtitleAnchors;
+        }
+
+        function pinVocabToSubtitle(item, subtitleIndex) {
+            const sub = subtitleData[subtitleIndex];
+            if (!item || !sub || !Number.isFinite(Number(sub.startTime))) return;
+
+            if (!Array.isArray(item.savedIndexes)) item.savedIndexes = [];
+            if (!item.savedIndexes.includes(subtitleIndex)) {
+                item.savedIndexes.push(subtitleIndex);
+            }
+
+            const anchors = ensureVocabSubtitleAnchors(item);
+            if (!anchors.some(anchor => Number(anchor.subtitleIndex) === subtitleIndex)) {
+                anchors.push({
+                    subtitleIndex,
+                    startTime: Number(sub.startTime) || 0,
+                    endTime: Number(sub.endTime) > Number(sub.startTime)
+                        ? Number(sub.endTime)
+                        : (Number(sub.startTime) || 0) + 2,
+                    koreanText: sub.koreanText || ""
+                });
+            }
+            item.isLinked = true;
+        }
+
+        function getUniquePinnedSubtitleAnchors(vocabItems = vocabList) {
+            const unique = new Map();
+            vocabItems.forEach(item => {
+                ensureVocabSubtitleAnchors(item).forEach(anchor => {
+                    const subtitleIndex = Number(anchor.subtitleIndex);
+                    if (!subtitleData[subtitleIndex]) return;
+                    // Một câu chỉ phát một lần, kể cả có nhiều từ được nhấp trong câu đó.
+                    const key = Number.isInteger(subtitleIndex)
+                        ? `index:${subtitleIndex}`
+                        : `time:${anchor.startTime}:${anchor.endTime}`;
+                    if (!unique.has(key)) {
+                        unique.set(key, {
+                            subtitleIndex,
+                            startTime: Number(anchor.startTime) || Number(subtitleData[subtitleIndex].startTime) || 0,
+                            endTime: Number(anchor.endTime) || Number(subtitleData[subtitleIndex].endTime) || 0,
+                            koreanText: anchor.koreanText || subtitleData[subtitleIndex].koreanText || ""
+                        });
+                    }
+                });
+            });
+            return Array.from(unique.values()).sort((a, b) => a.startTime - b.startTime);
+        }
+
+        function stopPinnedSubtitleReplay() {
+            vocabReplayToken++;
+            vocabReplayActive = false;
+            if (vocabReplayTimer) {
+                clearInterval(vocabReplayTimer);
+                vocabReplayTimer = null;
+            }
+            try { if (youtubePlayer) youtubePlayer.pauseVideo(); } catch (e) {}
+            stopReading();
+            const status = document.getElementById("vocab-replay-status");
+            if (status) status.textContent = "";
+            const button = document.querySelector('button[onclick="replayPinnedSubtitleSegments()"]');
+            if (button) button.textContent = "▶ Xem lại các đoạn đã ghim";
+        }
+
+        function replayPinnedSubtitleSegments(word = null) {
+            if (!youtubePlayer || !subtitleData.length) {
+                alert("Vui lòng tải video và phụ đề trước!");
+                return;
+            }
+            if (vocabReplayActive) {
+                stopPinnedSubtitleReplay();
+                return;
+            }
+
+            const items = word === null
+                ? vocabList
+                : vocabList.filter(item => item && item.word === word);
+            const anchors = getUniquePinnedSubtitleAnchors(items);
+            if (!anchors.length) {
+                alert(word
+                    ? `Từ "${word}" chưa có đoạn phụ đề được ghim.`
+                    : "Chưa có đoạn phụ đề nào được ghim bằng cách nhấp vào từ vựng.");
+                return;
+            }
+
+            stopReading();
+            vocabReplayActive = true;
+            const token = ++vocabReplayToken;
+            let position = 0;
+            const status = document.getElementById("vocab-replay-status");
+            const button = document.querySelector('button[onclick="replayPinnedSubtitleSegments()"]');
+            if (button) button.textContent = "⏹ Dừng xem lại";
+
+            const finish = () => {
+                if (token !== vocabReplayToken) return;
+                vocabReplayActive = false;
+                if (vocabReplayTimer) {
+                    clearInterval(vocabReplayTimer);
+                    vocabReplayTimer = null;
+                }
+                try { youtubePlayer.pauseVideo(); } catch (e) {}
+                stopReading();
+                if (button) button.textContent = "▶ Xem lại các đoạn đã ghim";
+                if (status) status.textContent = `✅ Đã phát lại ${anchors.length} đoạn phụ đề.`;
+            };
+
+            const playNext = () => {
+                if (!vocabReplayActive || token !== vocabReplayToken) return;
+                if (position >= anchors.length) {
+                    finish();
+                    return;
+                }
+
+                const anchor = anchors[position];
+                const startTime = Math.max(0, Number(anchor.startTime) || 0);
+                const endTime = Math.max(startTime + 0.15, Number(anchor.endTime) || startTime + 2);
+                if (status) status.textContent = `▶ Đoạn ${position + 1}/${anchors.length}: ${formatPinnedSubtitleTime(startTime)}`;
+
+                try { youtubePlayer.pauseVideo(); } catch (e) {}
+                try { youtubePlayer.seekTo(startTime, true); } catch (e) {}
+                currentSubtitleIndex = anchor.subtitleIndex - 1;
+                try { updateSubtitleDisplay(anchor.subtitleIndex); } catch (e) {}
+                try { youtubePlayer.playVideo(); } catch (e) {}
+
+                let checks = 0;
+                vocabReplayTimer = setInterval(() => {
+                    if (!vocabReplayActive || token !== vocabReplayToken) {
+                        clearInterval(vocabReplayTimer);
+                        vocabReplayTimer = null;
+                        return;
+                    }
+                    let currentTime = startTime;
+                    try { currentTime = youtubePlayer.getCurrentTime(); } catch (e) {}
+                    let playerState = -1;
+                    try { playerState = youtubePlayer.getPlayerState(); } catch (e) {}
+                    checks++;
+                    if (currentTime >= endTime - 0.06 || playerState === YT.PlayerState.ENDED || checks > 250) {
+                        clearInterval(vocabReplayTimer);
+                        vocabReplayTimer = null;
+                        try { youtubePlayer.pauseVideo(); } catch (e) {}
+                        position++;
+                        setTimeout(playNext, 180);
+                    }
+                }, 50);
+            };
+
+            playNext();
+        }
+
+        function renderVocabSubtitleAnchors(item) {
+            const anchors = ensureVocabSubtitleAnchors(item)
+                .sort((a, b) => Number(a.startTime) - Number(b.startTime));
+            if (!anchors.length) {
+                return `<div style="font-size:11px;color:#888;margin-top:4px;">Chưa có mốc phụ đề được ghim</div>`;
+            }
+            const times = anchors.map(anchor =>
+                `<span title="${escapeHtmlSafe(anchor.koreanText || "")}" style="display:inline-block;margin:3px 4px 0 0;padding:2px 5px;background:#e3f2fd;border-radius:4px;">⏱ ${formatPinnedSubtitleTime(anchor.startTime)}</span>`
+            ).join("");
+            return `<div style="font-size:11px;color:#555;margin-top:4px;">${times}</div>`;
+        }
+
+        function clearAllVocab() {
+            if (!vocabList.length) {
+                alert("Danh sách từ vựng của video hiện tại đang trống.");
+                return;
+            }
+            if (!confirm("Bạn có chắc chắn muốn xóa toàn bộ từ vựng đã tra của video hiện tại không?")) return;
+            if (vocabReplayActive) stopPinnedSubtitleReplay();
+            vocabList = [];
+            saveVocabToHistory();
+            displayVocabList();
+            clearVocabDisplay();
+            if (subtitleData.length && currentSubtitleIndex >= 0) {
+                updateSubtitleDisplay(currentSubtitleIndex);
+            }
+        }
+
         function handleWordClick(word, subtitleIndex) {
             let existing = vocabList.find(item => item.word === word);
             
             if (!existing) {
-                 existing = { word, meaning: "Đang tra cứu...", savedIndexes: [], isLinked: true };
-                if (subtitleIndex !== undefined) existing.savedIndexes.push(subtitleIndex);
+                 existing = { word, meaning: "Đang tra cứu...", savedIndexes: [], subtitleAnchors: [], isLinked: true };
+                pinVocabToSubtitle(existing, subtitleIndex);
                 
                 vocabList.push(existing);
                 saveVocabToHistory();
                 displayVocabList();
             } else {
-                if (!existing.savedIndexes) existing.savedIndexes = [];
-                if (subtitleIndex !== undefined && !existing.savedIndexes.includes(subtitleIndex)) {
-                    existing.savedIndexes.push(subtitleIndex);
-                }
-                 // Từ được bấm trực tiếp cũng phải được xem là từ đã gắn
-                 // với dòng phụ đề để lần phát lại tự động chọn đúng từ.
-                 existing.isLinked = true;
+                pinVocabToSubtitle(existing, subtitleIndex);
                  saveVocabToHistory();
+                displayVocabList();
             }
             
             lookupWord(word);
@@ -2053,6 +2277,7 @@ function showSRTPanel() {
        }
 
         function syncSubtitles() {
+            if (vocabReplayActive) return;
             if (!youtubePlayer || youtubePlayer.getPlayerState() !== YT.PlayerState.PLAYING) {
                 return;
            }
@@ -2478,6 +2703,7 @@ function showSRTPanel() {
                                 randomVocabCurrentIndex >= 0
                                     ? [randomVocabCurrentIndex]
                                     : [],
+                            subtitleAnchors: [],
                             isLinked: true
                         };
                         vocabList.push(existing);
@@ -2570,19 +2796,21 @@ function showSRTPanel() {
 
             for (let i = startIndex; i <= endIndex; i++) {
                 const sub = subtitleData[i];
-                const linkedVocab = vocabList.find(v =>
-                    v.savedIndexes &&
-                    v.savedIndexes.includes(i)
-                );
 
                 const highlightedKoreanText = sub.koreanText.split(/\s+/).map(word => {
                     const cleanWord = word.replace(/[^\p{Script=Hangul}]+/gu, '').trim();
+                    const linkedVocab = vocabList.find(v =>
+                        v.savedIndexes &&
+                        v.savedIndexes.includes(i) &&
+                        cleanWord &&
+                        (cleanWord === v.word || cleanWord.includes(v.word) || v.word.includes(cleanWord))
+                    );
 
                     if (linkedVocab && cleanWord.includes(linkedVocab.word)) {
                         return `<span class="korean-word learned" style="background-color:#ffeb3b; font-weight:bold; border-radius:4px; padding:2px 6px;">${word}</span>`;
                     }
 
-                    return `<span class="korean-word" onclick="handleWordClick('${cleanWord}', ${i})">${word}</span>`;
+                    return `<span class="korean-word" onclick='handleWordClick(${JSON.stringify(cleanWord)}, ${i})'>${word}</span>`;
                 }).join(' ');
 
                 const isCurrent = i === index ? 'current' : '';
@@ -3251,11 +3479,13 @@ function showSRTPanel() {
             vocabList.forEach((item, index) => {
                 const div = document.createElement("div");
                 div.className = "vocab-item";
+                const anchorsHtml = renderVocabSubtitleAnchors(item);
+                const replayButton = `<button type="button" onclick='replayPinnedSubtitleSegments(${JSON.stringify(item.word)}); event.stopPropagation();' style="background:#1976d2;color:white;border:none;border-radius:4px;padding:3px 6px;cursor:pointer;">▶ Xem lại</button>`;
                 if (naverLookupEnabled) {
                     div.className = "vocab-item-naver";
-                    div.innerHTML = `<div> <span class="korean-word clickable" onclick="openNaverDict('${item.word}')"> ${item.word}</span> <span class="vietnamese translation">${item.meaning}</span> </div> <button onclick="deleteVocab( ${index})">Xóa</button> `;
+                    div.innerHTML = `<div style="flex:1;"> <span class="korean-word clickable" onclick='openNaverDict(${JSON.stringify(item.word)})'> ${escapeHtmlSafe(item.word)}</span> <span class="vietnamese translation">${escapeHtmlSafe(item.meaning)}</span>${anchorsHtml}${replayButton}</div> <button onclick="deleteVocab( ${index})">Xóa</button> `;
                } else {
-                    div.innerHTML = ` <input type="text" value="${item.word}" onchange="editVocab( ${index}, 'word', this.value)"> <input type="text" value="${item.meaning}" placeholder="Nhập nghĩa..." onchange="editVocab( ${index}, 'meaning', this.value)"> <button onclick="deleteVocab(${index})">Xóa</button> `;
+                    div.innerHTML = ` <div style="flex:1;"><input type="text" value="${escapeHtmlSafe(item.word)}" onchange="editVocab( ${index}, 'word', this.value)"> <input type="text" value="${escapeHtmlSafe(item.meaning)}" placeholder="Nhập nghĩa..." onchange="editVocab(${index}, 'meaning', this.value)">${anchorsHtml}${replayButton}</div> <button onclick="deleteVocab(${index})">Xóa</button> `;
                }
                 vocabListDiv.appendChild(div);
            });
@@ -3270,6 +3500,9 @@ function showSRTPanel() {
             vocabList.splice(index, 1);
             saveVocabToHistory();
             displayVocabList();
+            if (subtitleData.length && currentSubtitleIndex >= 0) {
+                updateSubtitleDisplay(currentSubtitleIndex);
+            }
        }
 
         function saveVocabToHistory() {
@@ -4697,4 +4930,3 @@ window.deleteCloudData = async function() {
 
 </body>
 </html>
-
