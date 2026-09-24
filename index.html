@@ -1720,7 +1720,7 @@ function showSRTPanel() {
                     vocabList[index].meaning = translated;
                     saveVocabToHistory();
                     displayVocabList();
-                    updateSubtitleDisplay(currentSubtitleIndex);
+                    updateSubtitleDisplay(getSubtitleDisplayRefreshIndex());
                } else {
                     vocabList.push({ word: text, meaning: translated});
                     saveVocabToHistory();
@@ -1970,7 +1970,7 @@ function showSRTPanel() {
             displayVocabList();
             clearVocabDisplay();
             if (subtitleData.length && currentSubtitleIndex >= 0) {
-                updateSubtitleDisplay(currentSubtitleIndex);
+                updateSubtitleDisplay(getSubtitleDisplayRefreshIndex());
             }
         }
 
@@ -1991,6 +1991,12 @@ function showSRTPanel() {
             }
             
             lookupWord(word);
+            // Trong Luyện nghe, currentSubtitleIndex có thể đang đứng trước
+            // nhóm hiện tại vì video được điều khiển theo cả nhóm. Khi tra từ,
+            // phải vẽ lại đúng nhóm đang hiển thị, không quay về phụ đề trước.
+            if (listeningPracticeActive) {
+                updateSubtitleDisplay(getSubtitleDisplayRefreshIndex());
+            }
         }
 
         function lookupWord(word) {
@@ -2763,6 +2769,15 @@ function showSRTPanel() {
             }
         }
 
+        function getSubtitleDisplayRefreshIndex() {
+            if (listeningPracticeActive) {
+                const groups = getListeningPracticeGroups();
+                const activeGroup = groups[listeningPracticeGroupIndex];
+                if (activeGroup) return activeGroup.firstIndex;
+            }
+            return currentSubtitleIndex;
+        }
+
         function updateSubtitleDisplay(index) {
             let startIndex;
             let endIndex;
@@ -3520,7 +3535,7 @@ function showSRTPanel() {
             saveVocabToHistory();
             displayVocabList();
             if (subtitleData.length && currentSubtitleIndex >= 0) {
-                updateSubtitleDisplay(currentSubtitleIndex);
+                updateSubtitleDisplay(getSubtitleDisplayRefreshIndex());
             }
        }
 
@@ -4036,7 +4051,7 @@ window.fetchGoogleTranslate = async function(text) {
             vocabList[index].meaning = translated;
             saveVocabToHistory();
             displayVocabList();
-            updateSubtitleDisplay(currentSubtitleIndex);
+            updateSubtitleDisplay(getSubtitleDisplayRefreshIndex());
        } else {
             vocabList.push({ word: text, meaning: translated});
             saveVocabToHistory();
