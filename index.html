@@ -817,6 +817,7 @@ body.custom-fullscreen-active {
                 </label>
                 <span id="listening-practice-status" style="display:none;font-size:12px;color:#555;"></span>
                 <button class="btn-vid-trans"  onclick="translateSRT()">🌐 Dịch phụ đề</button>
+                <button id="retry-failed-translation-btn" class="btn-translation-pause" onclick="retryFailedTranslations()" disabled>🔁 Dịch lại đoạn lỗi</button>
                  <button id="translation-pause-btn" class="btn-translation-pause" onclick="toggleTranslationPause()" disabled>⏸ Tạm dừng dịch</button>
                 <button id="custom-fullscreen-btn" class="rewind-btn">Toàn màn hình (Chỉ Video & Phụ đề)</button>
             </div>
@@ -1115,6 +1116,30 @@ function showSRTPanel() {
                      ? "⏸ Đã tạm dừng — tiến độ đã được lưu"
                      : "Tiến độ được tự động lưu trong trình duyệt";
              }
+            updateRetryFailedTranslationsButton();
+        }
+
+        function getFailedTranslationIndexes() {
+            return subtitleData
+                .map((sub, index) => ({
+                    sub,
+                    index
+                }))
+                .filter(({ sub }) => {
+                    const translated = String(sub?.vietnameseText || "").trim();
+                    return !translated || translated === "[Lỗi dịch]";
+                })
+                .map(({ index }) => index);
+        }
+
+        function updateRetryFailedTranslationsButton() {
+            const button = document.getElementById("retry-failed-translation-btn");
+            if (!button) return;
+            const count = getFailedTranslationIndexes().length;
+            button.disabled = translationInProgress || count === 0;
+            button.textContent = count > 0
+                ? `🔁 Dịch lại đoạn lỗi (${count})`
+                : "🔁 Dịch lại đoạn lỗi";
          }
 
          function persistTranslationProgress() {
@@ -1662,6 +1687,93 @@ function showSRTPanel() {
            }
        }
 
+        async function retryFailedTranslations() {
+            if (!subtitleData.length) {
+                alert("Vui lòng tải phụ đề trước!");
+                return;
+            }
+
+            if (translationInProgress) {
+                if (translationPaused) toggleTranslationPause();
+                return;
+            }
+
+            const failedIndexes = getFailedTranslationIndexes();
+            if (!failedIndexes.length) {
+                updateRetryFailedTranslationsButton();
+                alert("Không có đoạn nào đang bị [Lỗi dịch].");
+                return;
+            }
+
+            if (!confirm(`Sẽ dịch lại ${failedIndexes.length} đoạn bị [Lỗi dịch]. Tiến độ sẽ được lưu sau mỗi đoạn. Tiếp tục?`)) {
+                return;
+            }
+
+            const wasPlaying = youtubePlayer &&
+                typeof YT !== "undefined" &&
+                youtubePlayer.getPlayerState() === YT.PlayerState.PLAYING;
+            if (wasPlaying) {
+                try { youtubePlayer.pauseVideo(); } catch (e) {}
+            }
+
+            try {
+                setTranslationUI(true, false);
+                const progressBox = document.getElementById("translation-progress");
+                if (progressBox) progressBox.style.display = "block";
+
+                for (let position = 0; position < failedIndexes.length; position++) {
+                    await waitWhileTranslationPaused();
+
+                    const index = failedIndexes[position];
+                    const sub = subtitleData[index];
+                    if (!sub) continue;
+
+                    const progress = Math.floor((position / failedIndexes.length) * 100);
+                    const progressBar = document.getElementById("progress-bar");
+                    const progressText = document.getElementById("progress-text");
+                    if (progressBar) progressBar.value = progress;
+                    if (progressText) {
+                        progressText.textContent =
+                            `Đang dịch lại dòng ${index + 1} (${position + 1}/${failedIndexes.length})... ${progress}%`;
+                    }
+
+                    sub.vietnameseText = await translateText(sub.koreanText);
+                    sub.fullText = `${sub.koreanText} ${sub.vietnameseText}`;
+                    persistTranslationProgress();
+                    updateRetryFailedTranslationsButton();
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                }
+
+                const progressBar = document.getElementById("progress-bar");
+                const progressText = document.getElementById("progress-text");
+                if (progressBar) progressBar.value = 100;
+                if (progressText) progressText.textContent = "Đã dịch lại các đoạn lỗi";
+                if (getFailedTranslationIndexes().length === 0) {
+                    const progressBox = document.getElementById("translation-progress");
+                    if (progressBox) progressBox.style.display = "none";
+                }
+                setTranslationUI(false, false);
+                localStorage.removeItem("translationPaused");
+                displaySubtitleList();
+                saveToHistory(
+                    currentVideoUrl,
+                    convertToSRT(subtitleData),
+                    document.getElementById("notebooklm-vocab").value
+                );
+                if (wasPlaying) {
+                    try { youtubePlayer.playVideo(); } catch (e) {}
+                }
+            } catch (error) {
+                console.error("Lỗi khi dịch lại phụ đề:", error);
+                setTranslationUI(false, false);
+                const progressBox = document.getElementById("translation-progress");
+                if (progressBox) progressBox.style.display = "none";
+                persistTranslationProgress();
+                updateRetryFailedTranslationsButton();
+                alert("Lỗi khi dịch lại phụ đề: " + error.message);
+            }
+        }
+
         async function translateText(text) {
             try {
                 const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=vi&dt=t&q=${encodeURIComponent(text)}`;
@@ -1707,6 +1819,7 @@ function showSRTPanel() {
                 div.onclick = () => jumpToSubtitle(index);
                 subtitleList.appendChild(div);
            });
+            updateRetryFailedTranslationsButton();
        }
 
         async function fetchGoogleTranslate(text) {
