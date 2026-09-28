@@ -1084,6 +1084,8 @@ function showSRTPanel() {
         let vocabPauseTTSEnabled = false;
         let lastVocabPauseIndex = -1;
         let isVocabPauseSpeaking = false;
+         let vocabPauseProgrammaticPause = false;
+         let vocabPauseSubtitleStartTime = null;
         let subtitleOffset = 0;
         let currentVideoFavorites = [];
         let vocabTTSMode = false;
@@ -1433,6 +1435,12 @@ function showSRTPanel() {
                         if (event.data === YT.PlayerState.PLAYING) {
                             startReading();
                         } else if (event.data === YT.PlayerState.PAUSED || event.data === YT.PlayerState.ENDED) {
+                             // pauseVideo() do cơ chế đọc từ vựng gọi ra không được
+                             // hủy TTS hoặc xóa bộ đồng bộ đang chờ đọc.
+                             if (vocabPauseProgrammaticPause) {
+                                 vocabPauseProgrammaticPause = false;
+                                 return;
+                             }
                             stopReading();
                         }
                     }
@@ -1958,6 +1966,32 @@ function showSRTPanel() {
             return Array.from(unique.values()).sort((a, b) => a.startTime - b.startTime);
         }
 
+         // Một từ có thể được tạo từ danh sách liên kết hoặc từ thao tác nhấp
+         // trực tiếp. Cả hai kiểu đều phải kích hoạt cơ chế dừng video.
+         function getVocabsForSubtitleIndex(subtitleIndex) {
+             return vocabList
+                 .filter(item => {
+                     if (!item) return false;
+                     const savedForSubtitle = Array.isArray(item.savedIndexes)
+                         && item.savedIndexes.includes(subtitleIndex);
+                     const anchoredForSubtitle = ensureVocabSubtitleAnchors(item)
+                         .some(anchor => Number(anchor.subtitleIndex) === subtitleIndex);
+                     return savedForSubtitle || anchoredForSubtitle;
+                 })
+                 .sort((a, b) => (b.isLinked ? 1 : 0) - (a.isLinked ? 1 : 0));
+         }
+
+         function getVietnameseVocabMeaning(vocab) {
+             const meaning = removeBracketsContent(String(vocab?.meaning || "").trim());
+             if (meaning && meaning !== "Đang tra cứu..." && meaning !== "Không lấy được nghĩa") {
+                 return meaning;
+             }
+
+             const notebookVocab = getNotebookVocabInfo(vocab?.word || "");
+             const notebookMeaning = removeBracketsContent(String(notebookVocab?.meaning || "").trim());
+             return notebookMeaning || "";
+         }
+
         function stopPinnedSubtitleReplay() {
             vocabReplayToken++;
             vocabReplayActive = false;
@@ -2427,9 +2461,7 @@ function showSRTPanel() {
                  // Không được bắt buộc isLinked ở đây: các từ đã tra ở phiên
                  // bản cũ có savedIndexes nhưng chưa có cờ isLinked, vì vậy
                  // vẫn phải hiện lại nghĩa khi phát lại video.
-                 const autoVocabs = vocabList
-                 .filter(v => v.savedIndexes && v.savedIndexes.includes(currentSubtitleIndex))
-                .sort((a, b) => (b.isLinked ? 1 : 0) - (a.isLinked ? 1 : 0));
+                 const autoVocabs = getVocabsForSubtitleIndex(currentSubtitleIndex);
                 if (autoVocabs.length > 0) {
                       const wordData = autoVocabs[0];
                       const notebookVocab = getNotebookVocabInfo(wordData.word);
@@ -2442,14 +2474,14 @@ function showSRTPanel() {
                     return;
                 }
 
-                // ==== Tính năng: Khi gặp từ vựng đã liên kết ====
-                // Tạm dừng video, đọc TTS Hàn + nghĩa Việt, rồi phát tiếp
+                 // ==== Tính năng: Khi gặp từ vựng đã liên kết ====
+                 // Tạm dừng video, đọc nghĩa tiếng Việt, rồi phát tiếp từ đầu câu đó
                 if (vocabPauseTTSEnabled
                     && autoVocabs.length > 0
                     && currentSubtitleIndex !== lastVocabPauseIndex
                     && !isVocabPauseSpeaking) {
                     lastVocabPauseIndex = currentSubtitleIndex;
-                    triggerVocabPauseTTS(autoVocabs[0]);
+                     triggerVocabPauseTTS(autoVocabs[0], nextSubtitle.startTime);
                     return; // Bỏ qua đọc phụ đề trong vòng này
                 }
 
@@ -2467,49 +2499,52 @@ function showSRTPanel() {
            }
        }
 
-        // ==== TÍNH NĂNG: Tạm dừng & Đọc Từ vựng (Hàn + Việt) ====
-        function triggerVocabPauseTTS(vocab) {
+        // ==== TÍNH NĂNG: Tạm dừng & Đọc nghĩa từ vựng bằng tiếng Việt ====
+        function triggerVocabPauseTTS(vocab, subtitleStartTime) {
             if (!youtubePlayer || !vocab) return;
             try {
                 speechSynthesis.cancel();
             } catch (e) {}
+             if (onlineTTSVoice) {
+                 try { onlineTTSVoice.pause(); onlineTTSVoice.currentTime = 0; } catch (e) {}
+                 onlineTTSVoice = null;
+             }
             isVocabPauseSpeaking = true;
+             vocabPauseSubtitleStartTime = Number(subtitleStartTime);
             try {
+                 vocabPauseProgrammaticPause = true;
                 youtubePlayer.pauseVideo();
-            } catch (e) {}
+             } catch (e) {
+                 vocabPauseProgrammaticPause = false;
+             }
 
-            const koreanWord = removeBracketsContent((vocab.word || "").trim());
-            const vietnameseMeaning = removeBracketsContent((vocab.meaning || "").trim());
+             const vietnameseMeaning = getVietnameseVocabMeaning(vocab);
+             const resumeVideo = () => {
+                 isVocabPauseSpeaking = false;
+                 vocabPauseProgrammaticPause = false;
+                 if (!vocabPauseTTSEnabled || !youtubePlayer) {
+                     vocabPauseSubtitleStartTime = null;
+                     return;
+                 }
+                 try {
+                     // TTS có thể làm thời gian video lệch thêm một chút.
+                     // Luôn quay về đúng đầu câu chứa từ vựng trước khi phát tiếp.
+                     const startTime = Number.isFinite(Number(subtitleStartTime))
+                         ? Number(subtitleStartTime)
+                         : vocabPauseSubtitleStartTime;
+                     vocabPauseSubtitleStartTime = null;
+                     if (Number.isFinite(startTime)) youtubePlayer.seekTo(startTime, true);
+                     youtubePlayer.playVideo();
+                 } catch (e) {}
+             };
 
-            const speakKorean = () => new Promise((resolve) => {
-                if (!koreanWord) return resolve();
-                const u = new SpeechSynthesisUtterance(koreanWord);
-                u.lang = "ko-KR";
-                u.rate = ttsSpeed;
-                u.volume = ttsVolume;
-                const voices = speechSynthesis.getVoices();
-                const ko = voices.find(v => v.lang === "ko-KR") || voices.find(v => v.lang && v.lang.startsWith("ko"));
-                if (ko) u.voice = ko;
-                u.onend = () => resolve();
-                u.onerror = () => resolve();
-                speechSynthesis.speak(u);
-            });
+             if (!vietnameseMeaning) {
+                 resumeVideo();
+                 return;
+             }
 
-            const speakVietnamesePart = () => new Promise((resolve) => {
-                if (!vietnameseMeaning) return resolve();
-                speakVietnamese(vietnameseMeaning, resolve);
-            });
-
-            speakKorean()
-                .then(() => speakVietnamesePart())
-                .finally(() => {
-                    isVocabPauseSpeaking = false;
-                    if (vocabPauseTTSEnabled && youtubePlayer) {
-                        try {
-                            youtubePlayer.playVideo();
-                        } catch (e) {}
-                    }
-                });
+             // Chỉ đọc nghĩa tiếng Việt của từ; không đọc lại từ tiếng Hàn.
+             speakVietnamese(vietnameseMeaning, resumeVideo, VOCAB_TTS_RATE);
         }
 
         function toggleVocabPauseTTS() {
