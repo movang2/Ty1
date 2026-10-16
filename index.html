@@ -803,6 +803,10 @@ body.custom-fullscreen-active {
                 <span class="ctrl-group-label">🎬 Video</span>
                 <button id="listening-practice-btn" class="btn-vid-rewind" onclick="toggleListeningPractice()">🎧 Luyện nghe</button>
                 <span style="display:inline-flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;color:#555;">
+                    Hiển thị <input id="subtitle-display-lines" type="number" min="1" max="50" value="5" onchange="updateSubtitleDisplayLineCount(this.value)" style="width:52px;padding:4px;border:1px solid #ccc;border-radius:5px;"> dòng
+                    <button type="button" onclick="resetSubtitleDisplayLineCount()" style="width:auto;padding:5px 9px;background:#607d8b;color:white;border:0;border-radius:5px;cursor:pointer;">Mặc định (5)</button>
+                </span>
+                <span style="display:inline-flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;color:#555;">
                     Gom <input id="listening-practice-lines" type="number" min="1" max="50" value="3" style="width:52px;padding:4px;border:1px solid #ccc;border-radius:5px;"> dòng
                 </span>
                 <span style="display:inline-flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;color:#555;">
@@ -1065,6 +1069,8 @@ function showSRTPanel() {
         window.wasPlaying = null;
         let subtitleData = window.subtitleData;
         let currentSubtitleIndex = -1;
+        const DEFAULT_SUBTITLE_DISPLAY_LINE_COUNT = 5;
+        let subtitleDisplayLineCount = DEFAULT_SUBTITLE_DISPLAY_LINE_COUNT;
         let isSpeaking = false;
         let ttsSpeed = 1.5;
         let ttsLanguage = "vi-VN";
@@ -1316,6 +1322,7 @@ function showSRTPanel() {
                 alert("URL không hợp lệ! Vui lòng nhập link dạng https://www.youtube.com/watch?v=dQw4w9WgXcQ");
                 return;
            }
+            resetSubtitleDisplayLineCount();
             currentVideoUrl = urlInput;
             const iframe = document.getElementById("youtube-video");
             iframe.src = `https://www.youtube.com/embed/${videoId}?enablejsapi=1`;
@@ -2953,9 +2960,13 @@ function showSRTPanel() {
                     endIndex = Math.min(subtitleData.length - 1, startIndex + count);
                 }
             } else {
-                // Chế độ bình thường: giữ nguyên cách hiển thị 5 dòng hiện tại.
-                startIndex = Math.max(0, index - 2);
-                endIndex = Math.min(subtitleData.length - 1, index + 2);
+                // Chế độ bình thường: hiển thị số dòng người dùng chọn,
+                // căn quanh phụ đề hiện tại và dịch vùng hiển thị ở đầu/cuối video.
+                const count = Math.max(1, Math.min(50, subtitleDisplayLineCount));
+                const beforeCurrent = Math.floor((count - 1) / 2);
+                startIndex = Math.max(0, index - beforeCurrent);
+                endIndex = Math.min(subtitleData.length - 1, startIndex + count - 1);
+                startIndex = Math.max(0, endIndex - count + 1);
             }
 
             let subtitleContent = '';
@@ -2995,6 +3006,25 @@ function showSRTPanel() {
             try { prepareRandomVocabForCurrentSubtitle(index); } catch (e) {
                 console.warn('Random vocab:', e);
             }
+        }
+
+        function updateSubtitleDisplayLineCount(value) {
+            const input = document.getElementById("subtitle-display-lines");
+            const parsed = parseInt(value, 10);
+            subtitleDisplayLineCount = Math.max(
+                1,
+                Math.min(50, Number.isFinite(parsed) ? parsed : DEFAULT_SUBTITLE_DISPLAY_LINE_COUNT)
+            );
+            if (input) input.value = subtitleDisplayLineCount;
+
+            // Luyện nghe sử dụng số dòng "Gom" riêng, không bị thay đổi bởi thiết lập này.
+            if (!listeningPracticeActive && subtitleData.length && currentSubtitleIndex >= 0) {
+                updateSubtitleDisplay(currentSubtitleIndex);
+            }
+        }
+
+        function resetSubtitleDisplayLineCount() {
+            updateSubtitleDisplayLineCount(DEFAULT_SUBTITLE_DISPLAY_LINE_COUNT);
         }
 
         function readText(text, callback) {
