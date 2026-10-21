@@ -238,6 +238,14 @@
             text-decoration: underline;
             background-color: #f0f0f0;
        }
+.korean-word.batch-selectable {
+    cursor: pointer;
+}
+.korean-word.batch-selected {
+    outline: 2px solid #ff9800;
+    border-radius: 4px;
+    background-color: #fff3cd !important;
+}
         .vietnamese.translation {
             color: #cc0000;
             margin-left: 10px;
@@ -886,31 +894,14 @@ body.custom-fullscreen-active {
             </div>
 
             <div class="settings-row" style="border-top:1px solid #ddd; margin-top:8px; padding-top:8px;">
-                <label style="font-weight:bold;">🎲 Tra từ ngẫu nhiên theo phụ đề tiếp theo:</label>
+                <label style="font-weight:bold;">📚 Chọn nhiều từ trong phụ đề để tra cùng lúc:</label>
                 <label style="cursor:pointer; width:auto;">
                     <input type="checkbox" id="random-vocab-enabled" style="width:auto;">
                     Bật
                 </label>
             </div>
-            <div class="settings-row">
-                <label for="random-vocab-percent">Tỷ lệ chọn từ:</label>
-                <input type="range" id="random-vocab-percent" min="1" max="100" value="30" style="width:150px;">
-                <span id="random-vocab-percent-val">30%</span>
-            </div>
-            <div class="settings-row">
-                <label style="cursor:pointer; width:auto;">
-                    <input type="checkbox" id="random-vocab-skip-short" checked style="width:auto;">
-                    Bỏ từ quá ngắn (1 ký tự)
-                </label>
-            </div>
-            <div class="settings-row">
-                <label style="cursor:pointer; width:auto;">
-                    <input type="checkbox" id="random-vocab-skip-cached" checked style="width:auto;">
-                    Bỏ từ đã tra trước đó
-                </label>
-            </div>
             <div class="settings-row" style="font-size:12px;color:#666;">
-                💡 Không giới hạn số từ. Tỷ lệ được áp dụng trên toàn bộ từ đủ điều kiện của <b>phụ đề hiện tại</b>.
+                💡 Khi bật: nhấp các từ muốn tra, mở danh sách rồi chọn “Tra các từ này”. Nghĩa nổi và tra ngay từng từ sẽ tạm dừng; khi tắt, nhấp từ hoạt động như trước.
             </div>
             <div class="settings-row">
                 <label>📏 Cỡ chữ phụ đề:</label>
@@ -950,19 +941,20 @@ body.custom-fullscreen-active {
     </div>
     <div id="subtitle-display"></div>
 
-    <!-- Bong bóng tra từ ngẫu nhiên: hoạt động cả chế độ bình thường và luyện nghe -->
-    <button id="random-vocab-bubble" class="random-vocab-bubble" type="button" onclick="lookupRandomCurrentSubtitleWords()">
-        <span>🎲 Tra từ</span>
+    <!-- Bong bóng tra các từ người dùng đã chọn -->
+    <button id="random-vocab-bubble" class="random-vocab-bubble" type="button" onclick="openSelectedVocabPanel()">
+        <span>📚 Xem từ đã chọn</span>
         <span id="random-vocab-count">0</span>
         <span id="random-vocab-preview" class="rvb-preview"></span>
     </button>
 
     <div id="random-vocab-panel" class="random-vocab-panel">
-        <h3>🎲 Từ được chọn ở phụ đề hiện tại</h3>
+        <h3>📚 Từ vựng đã chọn</h3>
         <div id="random-vocab-panel-words"></div>
         <div id="random-vocab-panel-status" class="rv-status"></div>
         <div class="rv-actions">
-            <button type="button" onclick="lookupRandomCurrentSubtitleWords(true)" style="background:#1976d2;color:#fff;border:0;border-radius:8px;">🔎 Tra các từ này</button>
+            <button type="button" onclick="lookupSelectedVocabWords()" style="background:#1976d2;color:#fff;border:0;border-radius:8px;">🔎 Tra các từ này</button>
+            <button type="button" onclick="clearSelectedVocabWords()" style="background:#ff9800;color:#fff;border:0;border-radius:8px;">🧹 Bỏ chọn</button>
             <button type="button" onclick="closeRandomVocabPanel()" style="background:#777;color:#fff;border:0;border-radius:8px;">Đóng</button>
         </div>
     </div>
@@ -1323,6 +1315,7 @@ function showSRTPanel() {
                 return;
            }
             resetSubtitleDisplayLineCount();
+            resetSelectedVocabWords();
             currentVideoUrl = urlInput;
             const iframe = document.getElementById("youtube-video");
             iframe.src = `https://www.youtube.com/embed/${videoId}?enablejsapi=1`;
@@ -1380,6 +1373,7 @@ function showSRTPanel() {
                     alert("Không tải được phụ đề!");
                     return;
                }
+                resetSelectedVocabWords();
                 alert(`Đã tải ${subtitleData.length} dòng phụ đề tự động!`);
                 displaySubtitleList();
 
@@ -1543,6 +1537,7 @@ function showSRTPanel() {
                         return;
                     }
 
+                    resetSelectedVocabWords();
                     alert(`Đã tải và xử lý ${subtitleData.length} dòng phụ đề!`);
 
                     displaySubtitleList();
@@ -2128,6 +2123,12 @@ function showSRTPanel() {
         }
 
         function handleWordClick(word, subtitleIndex) {
+            if (randomVocabEnabled) {
+                // Chế độ chọn theo lượt: không gọi tra ngay và không mở nghĩa nổi.
+                toggleSelectedVocabWord(word, subtitleIndex);
+                return;
+            }
+
             let existing = vocabList.find(item => item.word === word);
             
             if (!existing) {
@@ -2568,52 +2569,24 @@ function showSRTPanel() {
         }
 
 
-        // ===== TRA TỪ NGẪU NHIÊN THEO PHỤ ĐỀ HIỆN TẠI =====
+        // ===== CHỌN NHIỀU TỪ TRONG PHỤ ĐỀ VÀ TRA THEO LƯỢT =====
         let randomVocabEnabled = false;
-        let randomVocabPercent = 30;
-        let randomVocabSkipShort = true;
-        let randomVocabSkipCached = true;
-        let randomVocabCurrentIndex = -1;
-        let randomVocabCurrentWords = [];
+        const selectedVocabWords = new Map();
         let randomVocabLookupBusy = false;
+        let selectedVocabSourceRevision = 0;
 
         function initRandomVocabSettings() {
             const enabled = document.getElementById("random-vocab-enabled");
-            const percent = document.getElementById("random-vocab-percent");
-            const percentVal = document.getElementById("random-vocab-percent-val");
-            const skipShort = document.getElementById("random-vocab-skip-short");
-            const skipCached = document.getElementById("random-vocab-skip-cached");
 
             randomVocabEnabled = localStorage.getItem("randomVocabEnabled") === "1";
-            const savedPercent = parseInt(localStorage.getItem("randomVocabPercent"), 10);
-            randomVocabPercent = Number.isFinite(savedPercent) ? Math.max(1, Math.min(100, savedPercent)) : 30;
-            randomVocabSkipShort = localStorage.getItem("randomVocabSkipShort") !== "0";
-            randomVocabSkipCached = localStorage.getItem("randomVocabSkipCached") !== "0";
 
             if (enabled) enabled.checked = randomVocabEnabled;
-            if (percent) percent.value = randomVocabPercent;
-            if (percentVal) percentVal.textContent = randomVocabPercent + "%";
-            if (skipShort) skipShort.checked = randomVocabSkipShort;
-            if (skipCached) skipCached.checked = randomVocabSkipCached;
 
             enabled?.addEventListener("change", e => {
                 randomVocabEnabled = e.target.checked;
                 localStorage.setItem("randomVocabEnabled", randomVocabEnabled ? "1" : "0");
-                if (!randomVocabEnabled) hideRandomVocabBubble();
-                else if (currentSubtitleIndex >= 0) prepareRandomVocabForCurrentSubtitle(currentSubtitleIndex, true);
-            });
-            percent?.addEventListener("input", e => {
-                randomVocabPercent = Math.max(1, Math.min(100, parseInt(e.target.value,10) || 30));
-                if (percentVal) percentVal.textContent = randomVocabPercent + "%";
-                localStorage.setItem("randomVocabPercent", String(randomVocabPercent));
-            });
-            skipShort?.addEventListener("change", e => {
-                randomVocabSkipShort = e.target.checked;
-                localStorage.setItem("randomVocabSkipShort", randomVocabSkipShort ? "1" : "0");
-            });
-            skipCached?.addEventListener("change", e => {
-                randomVocabSkipCached = e.target.checked;
-                localStorage.setItem("randomVocabSkipCached", randomVocabSkipCached ? "1" : "0");
+                if (!randomVocabEnabled) resetSelectedVocabWords();
+                refreshSubtitleForVocabSelection();
             });
         }
 
@@ -2623,42 +2596,7 @@ function showSRTPanel() {
                 .trim();
         }
 
-        function getRandomVocabCandidatesForSubtitle(index) {
-            if (!subtitleData[index]) return [];
-            const text = subtitleData[index].koreanText || "";
-            const seen = new Set();
-            const result = [];
-
-            text.split(/\s+/).forEach(raw => {
-                const word = randomVocabNormalizeWord(raw);
-                if (!word) return;
-                if (randomVocabSkipShort && word.length <= 1) return;
-                if (seen.has(word)) return;
-                seen.add(word);
-
-                if (randomVocabSkipCached) {
-                    const cached = vocabList.some(v => v && v.word === word && v.meaning && v.meaning !== "Đang tra cứu...");
-                    if (cached) return;
-                }
-                result.push(word);
-            });
-            return result;
-        }
-
-        function chooseRandomVocabWords(index) {
-            const candidates = getRandomVocabCandidatesForSubtitle(index);
-            if (!candidates.length) return [];
-
-            // Chọn ngẫu nhiên đúng khoảng tỷ lệ đã đặt; KHÔNG có giới hạn số lượng.
-            const count = Math.max(1, Math.ceil(candidates.length * randomVocabPercent / 100));
-            for (let i = candidates.length - 1; i > 0; i--) {
-                const j = Math.floor(Math.random() * (i + 1));
-                [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
-            }
-            return candidates.slice(0, Math.min(count, candidates.length));
-        }
-
-        function showRandomVocabBubble(words, index) {
+        function showRandomVocabBubble(entries) {
             const bubble = document.getElementById("random-vocab-bubble");
             const count = document.getElementById("random-vocab-count");
             const preview = document.getElementById("random-vocab-preview");
@@ -2666,30 +2604,85 @@ function showSRTPanel() {
             const panelStatus = document.getElementById("random-vocab-panel-status");
             if (!bubble) return;
 
-            randomVocabCurrentWords = words.slice();
-            randomVocabCurrentIndex = index;
-
-            if (!words.length) {
-                hideRandomVocabBubble();
-                return;
-            }
-
+            const words = entries.map(entry => entry.word);
             if (count) count.textContent = String(words.length);
             if (preview) preview.textContent = words.slice(0, 3).join(" · ") + (words.length > 3 ? " …" : "");
-            if (panelWords) panelWords.innerHTML = words.map(w => `<span class="rv-word">${escapeHtmlSafe(w)}</span>`).join("");
-            if (panelStatus) panelStatus.textContent = `Phụ đề ${index + 1}: đã chọn ${words.length} từ (${randomVocabPercent}%). Nhấn bong bóng để tra.`;
+            if (panelWords) {
+                panelWords.innerHTML = words.length
+                    ? words.map(w => `<span class="rv-word">${escapeHtmlSafe(w)}</span>`).join("")
+                    : "<div style='padding:10px;color:#777;'>Chưa chọn từ nào.</div>";
+            }
+            if (panelStatus) {
+                panelStatus.textContent = words.length
+                    ? `Đã chọn ${words.length} từ riêng biệt. Nhấn “Tra các từ này” để tra chung một lượt.`
+                    : "Nhấp vào các từ trong phụ đề để thêm vào danh sách.";
+            }
 
-            bubble.classList.add("show");
+            bubble.classList.toggle("show", words.length > 0);
         }
 
         function hideRandomVocabBubble() {
             document.getElementById("random-vocab-bubble")?.classList.remove("show");
             document.getElementById("random-vocab-panel")?.classList.remove("show");
-            randomVocabCurrentWords = [];
+        }
+
+        function resetSelectedVocabWords() {
+            selectedVocabWords.clear();
+            selectedVocabSourceRevision++;
+            hideRandomVocabBubble();
         }
 
         function closeRandomVocabPanel() {
             document.getElementById("random-vocab-panel")?.classList.remove("show");
+        }
+
+        function openSelectedVocabPanel() {
+            if (!selectedVocabWords.size) return;
+            document.getElementById("random-vocab-panel")?.classList.add("show");
+        }
+
+        function refreshSubtitleForVocabSelection() {
+            if (subtitleData.length && currentSubtitleIndex >= 0) {
+                updateSubtitleDisplay(getSubtitleDisplayRefreshIndex());
+            } else {
+                prepareRandomVocabForCurrentSubtitle(currentSubtitleIndex);
+            }
+        }
+
+        function toggleSelectedVocabWord(word, subtitleIndex) {
+            if (randomVocabLookupBusy) {
+                const status = document.getElementById("random-vocab-panel-status");
+                if (status) status.textContent = "⏳ Đang tra từ đã chọn; vui lòng đợi xong rồi chọn tiếp.";
+                return;
+            }
+
+            const cleanWord = randomVocabNormalizeWord(word);
+            if (!cleanWord) return;
+
+            const index = Number(subtitleIndex);
+            const selected = selectedVocabWords.get(cleanWord);
+            if (!selected) {
+                selectedVocabWords.set(cleanWord, {
+                    word: cleanWord,
+                    subtitleIndexes: new Set(Number.isInteger(index) && index >= 0 ? [index] : [])
+                });
+            } else if (selected.subtitleIndexes.has(index)) {
+                selectedVocabWords.delete(cleanWord);
+            } else if (Number.isInteger(index) && index >= 0) {
+                selected.subtitleIndexes.add(index);
+            }
+
+            refreshSubtitleForVocabSelection();
+        }
+
+        function clearSelectedVocabWords() {
+            if (randomVocabLookupBusy) return;
+            selectedVocabWords.clear();
+            const panelWords = document.getElementById("random-vocab-panel-words");
+            const panelStatus = document.getElementById("random-vocab-panel-status");
+            if (panelWords) panelWords.innerHTML = "<div style='padding:10px;color:#777;'>Chưa chọn từ nào.</div>";
+            if (panelStatus) panelStatus.textContent = "Đã bỏ chọn. Nhấp vào các từ trong phụ đề để chọn lại.";
+            refreshSubtitleForVocabSelection();
         }
 
         function escapeHtmlSafe(text) {
@@ -2699,19 +2692,13 @@ function showSRTPanel() {
         }
 
         function prepareRandomVocabForCurrentSubtitle(index, force = false) {
-            // Khi đang hiển thị dòng hiện tại, chuẩn bị từ cho dòng kế tiếp.
-            // Như vậy người dùng có thể xem trước từ vựng trước khi câu mới phát.
-            const nextIndex = index + 1;
-
-            if (!randomVocabEnabled || !subtitleData[nextIndex]) {
-                hideRandomVocabBubble();
+            // Từ được chọn bằng thao tác nhấp sẽ nằm trong danh sách cho đến khi
+            // người dùng tra hoặc bỏ chọn; không tự chọn từ theo câu kế tiếp nữa.
+            if (!randomVocabEnabled || !selectedVocabWords.size) {
+                document.getElementById("random-vocab-bubble")?.classList.remove("show");
                 return;
             }
-            if (!force && nextIndex === randomVocabCurrentIndex && randomVocabCurrentWords.length) return;
-
-            const words = chooseRandomVocabWords(nextIndex);
-            if (words.length) showRandomVocabBubble(words, nextIndex);
-            else hideRandomVocabBubble();
+            showRandomVocabBubble(Array.from(selectedVocabWords.values()));
         }
 
         function parseRandomVocabBatchResult(data, expectedCount) {
@@ -2758,7 +2745,7 @@ function showSRTPanel() {
             return result;
         }
 
-        // Tra toàn bộ từ ngẫu nhiên bằng đúng MỘT request Google Translate.
+        // Tra toàn bộ từ người dùng chọn bằng đúng MỘT request Google Translate.
         // Không gọi API riêng cho từng từ và không retry bằng request thứ hai.
         async function translateRandomVocabBatch(words) {
             if (!Array.isArray(words) || !words.length) return [];
@@ -2831,21 +2818,20 @@ function showSRTPanel() {
             `;
         }
 
-        async function lookupRandomCurrentSubtitleWords(openPanelOnly = false) {
-            if (!randomVocabCurrentWords.length || randomVocabLookupBusy) return;
+        async function lookupSelectedVocabWords() {
+            if (!selectedVocabWords.size || randomVocabLookupBusy) return;
 
             const panel = document.getElementById("random-vocab-panel");
             const status = document.getElementById("random-vocab-panel-status");
             if (panel) panel.classList.add("show");
-            if (openPanelOnly) return;
 
             randomVocabLookupBusy = true;
-
-            const words = [...new Set(
-                randomVocabCurrentWords
-                    .map(w => String(w || "").trim())
-                    .filter(Boolean)
-            )];
+            const selectedEntries = Array.from(selectedVocabWords.values()).map(entry => ({
+                word: entry.word,
+                subtitleIndexes: Array.from(entry.subtitleIndexes)
+            }));
+            const words = selectedEntries.map(entry => entry.word);
+            const requestSourceRevision = selectedVocabSourceRevision;
 
             if (status) {
                 status.textContent =
@@ -2855,11 +2841,18 @@ function showSRTPanel() {
             try {
                 // CHỈ MỘT LẦN gọi API cho toàn bộ danh sách.
                 const results = await translateRandomVocabBatch(words);
+                if (requestSourceRevision !== selectedVocabSourceRevision) {
+                    if (status) {
+                        status.textContent = "ℹ Video hoặc phụ đề đã đổi; kết quả của lượt tra cũ không được lưu vào video mới.";
+                    }
+                    return;
+                }
 
                 // Chỉ tạo/cập nhật từ vựng sau khi API trả kết quả.
                 results.forEach(result => {
                     if (!result.word) return;
 
+                    const selectedEntry = selectedEntries.find(entry => entry.word === result.word);
                     let existing = vocabList.find(
                         v => v && v.word === result.word
                     );
@@ -2868,28 +2861,19 @@ function showSRTPanel() {
                         existing = {
                             word: result.word,
                             meaning: result.meaning || "Không lấy được nghĩa",
-                            savedIndexes:
-                                randomVocabCurrentIndex >= 0
-                                    ? [randomVocabCurrentIndex]
-                                    : [],
+                            savedIndexes: [],
                             subtitleAnchors: [],
                             isLinked: true
                         };
                         vocabList.push(existing);
                     } else {
                         if (result.meaning) existing.meaning = result.meaning;
-
-                        if (!existing.savedIndexes) existing.savedIndexes = [];
-
-                        if (
-                            randomVocabCurrentIndex >= 0 &&
-                            !existing.savedIndexes.includes(randomVocabCurrentIndex)
-                        ) {
-                            existing.savedIndexes.push(randomVocabCurrentIndex);
-                        }
-
                         existing.isLinked = true;
                     }
+
+                    (selectedEntry?.subtitleIndexes || []).forEach(index => {
+                        pinVocabToSubtitle(existing, index);
+                    });
                 });
 
                 saveVocabToHistory();
@@ -2899,13 +2883,16 @@ function showSRTPanel() {
                 renderRandomVocabTable(results);
 
                 const successCount = results.filter(r => r.meaning).length;
+                selectedVocabWords.clear();
+                document.getElementById("random-vocab-bubble")?.classList.remove("show");
+                refreshSubtitleForVocabSelection();
 
                 if (status) {
                     status.textContent =
                         `✅ Đã tra xong ${successCount}/${words.length} từ bằng 1 lần gọi API.`;
                 }
             } catch (error) {
-                console.error("Lỗi tra từ ngẫu nhiên theo batch:", error);
+                console.error("Lỗi tra từ đã chọn theo batch:", error);
 
                 if (status) {
                     status.textContent =
@@ -2981,6 +2968,11 @@ function showSRTPanel() {
 
                 const highlightedKoreanText = sub.koreanText.split(/\s+/).map(word => {
                     const cleanWord = word.replace(/[^\p{Script=Hangul}]+/gu, '').trim();
+                    const batchSelectableClass = randomVocabEnabled ? 'batch-selectable' : '';
+                    const batchSelectedClass = randomVocabEnabled && selectedVocabWords.has(cleanWord)
+                        ? 'batch-selected'
+                        : '';
+                    const selectionClasses = `${batchSelectableClass} ${batchSelectedClass}`.trim();
                     const linkedVocab = vocabList.find(v =>
                         v.savedIndexes &&
                         v.savedIndexes.includes(i) &&
@@ -2989,10 +2981,13 @@ function showSRTPanel() {
                     );
 
                     if (linkedVocab && cleanWord.includes(linkedVocab.word)) {
-                        return `<span class="korean-word learned" style="background-color:#ffeb3b; font-weight:bold; border-radius:4px; padding:2px 6px;">${word}</span>`;
+                        const clickHandler = randomVocabEnabled
+                            ? `onclick='handleWordClick(${JSON.stringify(cleanWord)}, ${i})'`
+                            : '';
+                        return `<span class="korean-word learned ${selectionClasses}" ${clickHandler} style="background-color:#ffeb3b; font-weight:bold; border-radius:4px; padding:2px 6px;">${word}</span>`;
                     }
 
-                    return `<span class="korean-word" onclick='handleWordClick(${JSON.stringify(cleanWord)}, ${i})'>${word}</span>`;
+                    return `<span class="korean-word ${selectionClasses}" onclick='handleWordClick(${JSON.stringify(cleanWord)}, ${i})'>${word}</span>`;
                 }).join(' ');
 
                 const isCurrent = i === index ? 'current' : '';
