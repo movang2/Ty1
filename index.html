@@ -645,6 +645,113 @@ body.custom-fullscreen-active {
     font-size: 5px !important;
     padding: 1px 4px !important;
 }
+
+#vocab-info-display .vocab-batch-summary {
+    font-size: 13px !important;
+    font-weight: 700;
+    margin-bottom: 8px;
+}
+
+#vocab-info-display .vocab-batch-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 4px;
+    border-bottom: 1px solid #e5e5e5;
+}
+
+#vocab-info-display .vocab-batch-text {
+    font-size: 14px !important;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+#vocab-info-display .vocab-batch-word {
+    color: #1976d2;
+    font-weight: 700;
+}
+
+#vocab-info-display .vocab-batch-meaning {
+    color: #333;
+}
+
+#vocab-info-display .vocab-batch-naver {
+    flex: 0 0 30px;
+    width: 30px !important;
+    height: 30px;
+    padding: 0 !important;
+    border: 0;
+    border-radius: 50%;
+    background: #03c75a;
+    color: #fff;
+    font-size: 18px !important;
+    font-weight: 700;
+    line-height: 30px;
+    text-align: center;
+    cursor: pointer;
+}
+
+#vocab-info-display .vocab-time-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    margin-bottom: 8px;
+    padding: 8px;
+    border: 1px solid #d5e3f2;
+    border-radius: 8px;
+    background: #f4f8fc;
+}
+
+#vocab-info-display .vocab-time-nav-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px !important;
+    cursor: pointer;
+}
+
+#vocab-info-display .vocab-time-nav-toggle input[type="checkbox"] {
+    width: auto !important;
+    margin: 0;
+}
+
+#vocab-info-display .vocab-time-nav-controls {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+}
+
+#vocab-info-display .vocab-time-nav-controls button {
+    width: auto !important;
+    margin: 0;
+    padding: 5px 8px !important;
+    border: 0;
+    border-radius: 6px;
+    background: #1976d2;
+    color: #fff;
+    font-size: 12px !important;
+    cursor: pointer;
+}
+
+#vocab-info-display .vocab-time-nav-controls button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+#vocab-info-display .vocab-time-nav-status {
+    flex: 1;
+    font-size: 11px !important;
+    color: #555;
+    text-align: center;
+}
+
+#vocab-info-display .vocab-batch-empty {
+    padding: 8px 4px;
+    color: #777;
+    font-size: 12px !important;
+}
 </style>
 
 </head>
@@ -1061,6 +1168,7 @@ function showSRTPanel() {
         window.wasPlaying = null;
         let subtitleData = window.subtitleData;
         let currentSubtitleIndex = -1;
+        let vocabTimeNavigationEnabled = false;
         const DEFAULT_SUBTITLE_DISPLAY_LINE_COUNT = 5;
         let subtitleDisplayLineCount = DEFAULT_SUBTITLE_DISPLAY_LINE_COUNT;
         let isSpeaking = false;
@@ -1316,6 +1424,8 @@ function showSRTPanel() {
            }
             resetSubtitleDisplayLineCount();
             resetSelectedVocabWords();
+            currentSubtitleIndex = -1;
+            clearVocabDisplay();
             currentVideoUrl = urlInput;
             const iframe = document.getElementById("youtube-video");
             iframe.src = `https://www.youtube.com/embed/${videoId}?enablejsapi=1`;
@@ -1357,6 +1467,7 @@ function showSRTPanel() {
              }
             saveToHistory(urlInput, null, document.getElementById("notebooklm-vocab").value);
             displayVocabList();
+            displayVocabInfoForPlaybackIndex(currentSubtitleIndex);
             displayFavorites();
             instantLookupEnabled = localStorage.getItem("instantLookup") === "1";
             document.getElementById("instant-lookup-toggle").checked = instantLookupEnabled;
@@ -1877,7 +1988,17 @@ function showSRTPanel() {
        }
 
         function clearVocabDisplay() {
-            document.getElementById("vocab-info-display").innerHTML = "👉 Nhấp vào từ vựng được tô màu trong phụ đề để xem chi tiết";
+            const container = document.getElementById("vocab-info-display");
+            if (!container) return;
+            if (typeof displayCompactVocabInfo === "function") {
+                displayCompactVocabInfo(
+                    [],
+                    "Từ vựng ở câu đang phát",
+                    "Câu này chưa có từ vựng được nhấp hoặc liên kết."
+                );
+                return;
+            }
+            container.innerHTML = "👉 Nhấp vào từ vựng được tô màu trong phụ đề để xem chi tiết";
        }
 
         function formatPinnedSubtitleTime(seconds) {
@@ -2145,6 +2266,7 @@ function showSRTPanel() {
             }
             
             lookupWord(word);
+            displayVocabInfoForPlaybackIndex(currentSubtitleIndex);
             // Trong Luyện nghe, currentSubtitleIndex có thể đang đứng trước
             // nhóm hiện tại vì video được điều khiển theo cả nhóm. Khi tra từ,
             // phải vẽ lại đúng nhóm đang hiển thị, không quay về phụ đề trước.
@@ -2297,6 +2419,214 @@ function showSRTPanel() {
       html += `</div>`;
       container.innerHTML = html;
   }
+
+        function getVocabTimeNavigationState(timeOverride = null) {
+            const anchors = getUniquePinnedSubtitleAnchors();
+            let currentTime = 0;
+            if (timeOverride !== null && Number.isFinite(Number(timeOverride))) {
+                currentTime = Number(timeOverride);
+            } else if (youtubePlayer && youtubePlayer.getCurrentTime) {
+                try {
+                    currentTime = youtubePlayer.getCurrentTime() + subtitleOffset;
+                } catch (e) {}
+            }
+
+            const tolerance = 0.25;
+            const currentAnchorIndex = anchors.findIndex(anchor =>
+                Math.abs(Number(anchor.startTime) - currentTime) <= tolerance
+            );
+            let previousIndex = -1;
+            let nextIndex = -1;
+
+            if (currentAnchorIndex >= 0) {
+                previousIndex = currentAnchorIndex - 1;
+                nextIndex = currentAnchorIndex + 1;
+            } else {
+                nextIndex = anchors.findIndex(anchor => Number(anchor.startTime) > currentTime);
+                if (nextIndex < 0) nextIndex = anchors.length;
+                previousIndex = nextIndex - 1;
+            }
+
+            let status = "Chưa có mốc từ vựng đã nhấp/liên kết.";
+            if (anchors.length) {
+                if (currentAnchorIndex >= 0) {
+                    status = `Mốc ${currentAnchorIndex + 1}/${anchors.length}`;
+                } else if (nextIndex === 0) {
+                    status = `Trước mốc 1/${anchors.length}`;
+                } else if (nextIndex >= anchors.length) {
+                    status = `Sau mốc ${anchors.length}/${anchors.length}`;
+                } else {
+                    status = `Giữa mốc ${nextIndex}/${anchors.length} và ${nextIndex + 1}/${anchors.length}`;
+                }
+            }
+
+            return { anchors, previousIndex, nextIndex, status };
+        }
+
+        function displayCompactVocabInfo(
+            entries,
+            heading = "Từ vựng ở câu đang phát",
+            emptyMessage = "Câu này chưa có từ vựng được nhấp hoặc liên kết.",
+            timeOverride = null
+        ) {
+            const container = document.getElementById("vocab-info-display");
+            if (!container) return;
+
+            const uniqueEntries = new Map();
+            (Array.isArray(entries) ? entries : []).forEach(item => {
+                const word = String(item?.word || "").trim();
+                if (!word || uniqueEntries.has(word)) return;
+                uniqueEntries.set(word, {
+                    word,
+                    meaning: String(item?.meaning || "").trim()
+                });
+            });
+
+            const items = Array.from(uniqueEntries.values());
+            const navigation = getVocabTimeNavigationState(timeOverride);
+            const navigationEnabled = vocabTimeNavigationEnabled;
+            const previousDisabled = !navigationEnabled || navigation.previousIndex < 0
+                || navigation.previousIndex >= navigation.anchors.length;
+            const nextDisabled = !navigationEnabled || navigation.nextIndex < 0
+                || navigation.nextIndex >= navigation.anchors.length;
+
+            const rows = items.map(item => {
+                const wordArgument = JSON.stringify(item.word)
+                    .replace(/'/g, "\\u0027")
+                    .replace(/</g, "\\u003c");
+                const meaning = item.meaning || "Chưa có nghĩa";
+                return `
+                    <div class="vocab-batch-row">
+                        <div class="vocab-batch-text">
+                            <span class="vocab-batch-word">${escapeHtmlSafe(item.word)}</span>
+                            <span> - </span>
+                            <span class="vocab-batch-meaning">(${escapeHtmlSafe(meaning)})</span>
+                        </div>
+                        <button type="button" class="vocab-batch-naver"
+                            onclick='openNaverDict(${wordArgument})'
+                            title="Tra lại nghĩa trên Naver"
+                            aria-label="Tra lại nghĩa của ${escapeHtmlSafe(item.word)} trên Naver">+</button>
+                    </div>
+                `;
+            }).join("");
+
+            container.innerHTML = `
+                <div class="vocab-info-item" style="border-left-color:#4CAF50;padding:8px;">
+                    <div class="vocab-time-nav">
+                        <label class="vocab-time-nav-toggle">
+                            <input type="checkbox" ${navigationEnabled ? "checked" : ""}
+                                onchange="setVocabTimeNavigationEnabled(this.checked)">
+                            Bật xem lại từ đã nhấp/liên kết
+                        </label>
+                        <div class="vocab-time-nav-controls">
+                            <button type="button" ${previousDisabled ? "disabled" : ""}
+                                onclick="navigateLinkedVocab(-1)" title="Tới từ đã nhấp/liên kết trước đó">⏮ Trước</button>
+                            <span id="vocab-time-nav-status" class="vocab-time-nav-status">${escapeHtmlSafe(navigation.status)}</span>
+                            <button type="button" ${nextDisabled ? "disabled" : ""}
+                                onclick="navigateLinkedVocab(1)" title="Tới từ đã nhấp/liên kết tiếp theo">Sau ⏭</button>
+                        </div>
+                    </div>
+                    <div class="vocab-batch-summary">📚 ${escapeHtmlSafe(heading)} · ${items.length} từ</div>
+                    <div class="vocab-batch-list">${rows || `<div class="vocab-batch-empty">${escapeHtmlSafe(emptyMessage)}</div>`}</div>
+                </div>
+            `;
+        }
+
+        function displayVocabInfoForPlaybackIndex(index, timeOverride = null) {
+            const subtitleIndex = Number(index);
+            if (!Number.isInteger(subtitleIndex) || subtitleIndex < 0 || !subtitleData[subtitleIndex]) {
+                displayCompactVocabInfo(
+                    [],
+                    "Từ vựng ở câu đang phát",
+                    "Đang chờ video phát đến một câu có từ vựng đã nhấp/liên kết."
+                );
+                return;
+            }
+
+            let subtitleIndexes = [subtitleIndex];
+            if (listeningPracticeActive) {
+                const activeGroup = getListeningPracticeGroups().find(group =>
+                    subtitleIndex >= group.firstIndex && subtitleIndex <= group.lastIndex
+                );
+                if (activeGroup) {
+                    subtitleIndexes = [];
+                    for (let i = activeGroup.firstIndex; i <= activeGroup.lastIndex; i++) {
+                        subtitleIndexes.push(i);
+                    }
+                }
+            }
+
+            const itemsByWord = new Map();
+            subtitleIndexes.forEach(currentIndex => {
+                getVocabsForSubtitleIndex(currentIndex).forEach(item => {
+                    if (!item?.word || itemsByWord.has(item.word)) return;
+                    itemsByWord.set(item.word, {
+                        word: item.word,
+                        meaning: getVietnameseVocabMeaning(item) || String(item.meaning || "")
+                    });
+                });
+            });
+
+            if (!itemsByWord.size) {
+                displayCompactVocabInfo(
+                    [],
+                    "Từ vựng ở câu đang phát",
+                    "Câu này chưa có từ vựng được nhấp hoặc liên kết."
+                );
+                return;
+            }
+
+            displayCompactVocabInfo(
+                Array.from(itemsByWord.values()),
+                "Từ vựng ở câu đang phát",
+                "Câu này chưa có từ vựng được nhấp hoặc liên kết.",
+                timeOverride
+            );
+        }
+
+        function setVocabTimeNavigationEnabled(enabled) {
+            vocabTimeNavigationEnabled = !!enabled;
+            localStorage.setItem("vocabTimeNavigationEnabled", vocabTimeNavigationEnabled ? "1" : "0");
+            displayVocabInfoForPlaybackIndex(currentSubtitleIndex);
+        }
+
+        function navigateLinkedVocab(direction) {
+            if (!vocabTimeNavigationEnabled) return;
+            if (!youtubePlayer || typeof youtubePlayer.seekTo !== "function") {
+                const status = document.getElementById("vocab-time-nav-status");
+                if (status) status.textContent = "Tải video trước khi chuyển mốc.";
+                return;
+            }
+
+            const navigation = getVocabTimeNavigationState();
+            const targetIndex = direction < 0
+                ? navigation.previousIndex
+                : navigation.nextIndex;
+            const target = navigation.anchors[targetIndex];
+            if (!target) {
+                const status = document.getElementById("vocab-time-nav-status");
+                if (status) status.textContent = direction < 0
+                    ? "Đang ở mốc đầu tiên."
+                    : "Đang ở mốc cuối cùng.";
+                return;
+            }
+
+            const subtitleIndex = Number(target.subtitleIndex);
+            if (!Number.isInteger(subtitleIndex) || !subtitleData[subtitleIndex]) return;
+
+            try { if (typeof speechSynthesis !== "undefined") speechSynthesis.cancel(); } catch (e) {}
+            if (onlineTTSVoice) {
+                try { onlineTTSVoice.pause(); onlineTTSVoice.currentTime = 0; } catch (e) {}
+                onlineTTSVoice = null;
+            }
+            currentSubtitleIndex = subtitleIndex;
+            lastVocabPauseIndex = -1;
+            lastSpokenText = "";
+            try { youtubePlayer.seekTo(Number(target.startTime) || 0, true); } catch (e) {}
+            updateSubtitleDisplay(subtitleIndex);
+            displayVocabInfoForPlaybackIndex(subtitleIndex, Number(target.startTime) || 0);
+            try { youtubePlayer.playVideo(); } catch (e) {}
+        }
 
         function findWordAppearances(word) {
             const result = [];
@@ -2465,16 +2795,9 @@ function showSRTPanel() {
                 currentSubtitleIndex = nextIndex;
                 updateSubtitleDisplay(currentSubtitleIndex);
 
-                 // savedIndexes là dữ liệu được lưu khi người dùng bấm vào từ.
-                 // Không được bắt buộc isLinked ở đây: các từ đã tra ở phiên
-                 // bản cũ có savedIndexes nhưng chưa có cờ isLinked, vì vậy
-                 // vẫn phải hiện lại nghĩa khi phát lại video.
+                 // Chỉ hiển thị các từ đã nhấp/liên kết với đúng câu đang phát.
+                 // Các từ đã lưu từ phiên bản cũ (savedIndexes) cũng được tính.
                  const autoVocabs = getVocabsForSubtitleIndex(currentSubtitleIndex);
-                if (autoVocabs.length > 0) {
-                      const wordData = autoVocabs[0];
-                      const notebookVocab = getNotebookVocabInfo(wordData.word);
-                      displayVocabInfo(wordData.word, wordData, notebookVocab); // Dòng này quan trọng
-                  }
 
                 // Trong giai đoạn phát tiếng video của Luyện nghe: chỉ cập nhật phụ đề.
                 // Không được phát TTS phụ đề hoặc TTS từ vựng.
@@ -2878,6 +3201,7 @@ function showSRTPanel() {
 
                 saveVocabToHistory();
                 displayVocabList();
+                displayVocabInfoForPlaybackIndex(currentSubtitleIndex);
 
                 // Sau khi tra xong mới tạo bảng.
                 renderRandomVocabTable(results);
@@ -2996,6 +3320,7 @@ function showSRTPanel() {
 
             document.getElementById('subtitle-display').innerHTML = subtitleContent;
             highlightSubtitle(index);
+            displayVocabInfoForPlaybackIndex(index);
 
             // Chạy ở CẢ chế độ bình thường và Luyện nghe, mỗi khi phụ đề hiện tại đổi.
             try { prepareRandomVocabForCurrentSubtitle(index); } catch (e) {
@@ -3645,6 +3970,7 @@ function showSRTPanel() {
                 currentVideoFavorites = item.favoriteSubtitles ? item.favoriteSubtitles.slice() : [];
                 displayVocabList();
                 linkVocabToSubtitles();
+                displayVocabInfoForPlaybackIndex(currentSubtitleIndex);
                 displayFavorites();
                 
                 instantLookupEnabled = localStorage.getItem("instantLookup") === "1";
@@ -3979,6 +4305,7 @@ function showSRTPanel() {
                 subtitleOffset = parseFloat(localStorage.getItem("subtitleOffset")) || 0;
                 vocabDisplayMode = localStorage.getItem("vocabDisplayMode") === "true";
                 vocabPauseTTSEnabled = localStorage.getItem("vocabPauseTTSEnabled") === "1";
+                vocabTimeNavigationEnabled = localStorage.getItem("vocabTimeNavigationEnabled") === "1";
                  listeningPracticeAutoNext = localStorage.getItem("listeningPracticeAutoNext") !== "0";
 
                 const vpBtn = document.getElementById("vocab-pause-tts-btn");
@@ -4206,8 +4533,8 @@ window.lookupWord = function(word) {
        }
    }
     
-    // Vẫn hiển thị thông tin chi tiết ở panel dưới
-    displayVocabInfo(word, existingVocab || vocabList.find(item => item.word === word), notebookVocab);
+    // Panel chỉ theo dõi những từ gắn với câu đang phát.
+    displayVocabInfoForPlaybackIndex(currentSubtitleIndex);
 };
 
 // Cập nhật hàm fetchGoogleTranslate để trả về Promise
