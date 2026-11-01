@@ -1079,6 +1079,22 @@ body.custom-fullscreen-active {
     <h3>Danh sách từ vựng đã tra</h3>
     <h3>Danh sách từ NotebookLM</h3>
     <textarea id="notebooklm-vocab" rows="10" placeholder="Dán danh sách từ ở đây..."></textarea>
+    <div id="notebook-parser-tools" style="margin:12px 0;padding:12px;border:1px solid #7c9bce;border-radius:10px;background:#f4f8ff;">
+        <strong>🧩 Bộ xử lý NotebookLM có thể chỉnh sửa</strong>
+        <p style="margin:6px 0;font-size:13px;line-height:1.5;">Nếu NotebookLM thay đổi cách trình bày, hãy tạo prompt bên dưới để hỏi ChatGPT viết lại bộ phân tích. Sau đó dán mã ChatGPT trả về vào ô mã và nhấn <b>Áp dụng</b>. Mã mới chỉ dùng trên trình duyệt này.</p>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin:8px 0;">
+            <button type="button" onclick="makeNotebookParserPrompt()" style="background:#1769aa;color:white;border:0;border-radius:7px;padding:9px 12px;">🤖 Tạo prompt hỏi ChatGPT</button>
+            <button type="button" onclick="testNotebookParser()" style="background:#607d8b;color:white;border:0;border-radius:7px;padding:9px 12px;">🧪 Kiểm tra mã</button>
+            <button type="button" onclick="applyNotebookParserCode()" style="background:#2e7d32;color:white;border:0;border-radius:7px;padding:9px 12px;">✓ Áp dụng mã</button>
+            <button type="button" onclick="resetNotebookParserCode()" style="background:#777;color:white;border:0;border-radius:7px;padding:9px 12px;">Khôi phục mặc định</button>
+        </div>
+        <label for="notebook-parser-code" style="display:block;font-weight:bold;margin:10px 0 5px;">Mã xử lý (chỉ phần thân hàm JavaScript):</label>
+        <textarea id="notebook-parser-code" rows="13" spellcheck="false" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:12px;line-height:1.45;padding:10px;border:1px solid #9aaec7;border-radius:7px;" placeholder="Dán mã do ChatGPT tạo vào đây..."></textarea>
+        <div id="notebook-parser-status" role="status" style="font-size:13px;margin-top:8px;color:#455a64;">Đang dùng bộ xử lý mặc định.</div>
+        <label for="notebook-parser-prompt" style="display:block;font-weight:bold;margin:10px 0 5px;">Prompt đã tạo (có thể sao chép):</label>
+        <textarea id="notebook-parser-prompt" rows="8" style="width:100%;box-sizing:border-box;font-size:12px;padding:9px;border:1px solid #c5c5c5;border-radius:7px;" placeholder="Nhấn 'Tạo prompt hỏi ChatGPT' để tạo nội dung..."></textarea>
+        <button type="button" onclick="copyNotebookParserPrompt()" style="margin-top:7px;background:#455a64;color:white;border:0;border-radius:7px;padding:8px 12px;">📋 Sao chép prompt</button>
+    </div>
     
                     <div style="margin-top: 10px; display: flex; align-items: center; gap: 5px;">
                         <input type="text" id="chars-to-remove" value="**" placeholder="Nhập ký tự cần xóa (ví dụ: **, >>, ))) — tách bằng dấu phẩy">
@@ -1295,62 +1311,356 @@ function showSRTPanel() {
             return -1;
        }
 
+        // Bộ xử lý có thể thay đổi ngay trên web. Mã tùy chỉnh được lưu riêng trong localStorage.
+        const NOTEBOOK_PARSER_DEFAULT_CODE = String.raw`
+const lines = String(rawText || "").replace(/\r/g, "").split("\n");
+const output = [];
+const seen = new Set();
+
+const clean = value => String(value == null ? "" : value)
+  .replace(/<[^>]*>/g, " ")
+  .replace(/\*\*/g, "")
+  .replace(/\s+/g, " ")
+  .trim();
+
+const getKorean = value => {
+  let text = clean(value)
+    .replace(/^\s*(?:(?:[-*•])\s*)?\d+\s*[.)、:]\s*/, "")
+    .replace(/[（(][^）)]*[）)]/g, " ")
+    .replace(/\[[^\]]*\]/g, " ")
+    .trim();
+  const match = text.match(/[가-힣]+(?:\s+[가-힣]+)*/);
+  return match ? match[0].trim() : "";
+};
+
+const add = (rawWord, rawMeaning) => {
+  const korean = getKorean(rawWord);
+  const meaning = clean(rawMeaning)
+    .replace(/^\s*[-–—:：]\s*/, "")
+    .replace(/\s*\|\s*$/, "")
+    .trim();
+  if (!korean || !meaning) return;
+  const key = korean.replace(/\s+/g, " ").toLowerCase();
+  if (seen.has(key)) return;
+  seen.add(key);
+  output.push({ korean, meaning });
+};
+
+let tableColumns = null;
+for (const originalLine of lines) {
+  const row = originalLine.trim();
+  if (!row) continue;
+
+  if (row.includes("|")) {
+    const cells = row.replace(/^\|/, "").replace(/\|$/, "").split("|").map(clean);
+    if (cells.length < 2) continue;
+
+    // Nhận diện hàng tiêu đề và tự xác định cột tiếng Hàn / nghĩa tiếng Việt.
+    const headers = cells.map(cell => cell.toLocaleLowerCase());
+    const wordIndex = headers.findIndex(cell =>
+      /từ\s*vựng|tiếng\s*hàn|từ\s*tiếng\s*hàn|korean\s*(word|vocabulary)?|vocabulary|단어/.test(cell)
+    );
+    const meaningIndex = headers.findIndex(cell =>
+      /nghĩa\s*(tiếng\s*việt|việt)?|ý\s*nghĩa|tiếng\s*việt|vietnamese\s*(meaning|translation)?|meaning|translation|뜻|의미/.test(cell)
+    );
+
+    if (wordIndex >= 0 && meaningIndex >= 0) {
+      tableColumns = { word: wordIndex, meaning: meaningIndex };
+      continue;
+    }
+
+    // Bỏ qua hàng gạch phân cách của Markdown.
+    if (cells.every(cell => /^:?-{2,}:?$/.test(cell.replace(/\s/g, "")))) continue;
+
+    if (tableColumns && cells.length > Math.max(tableColumns.word, tableColumns.meaning)) {
+      add(cells[tableColumns.word], cells[tableColumns.meaning]);
+      continue;
+    }
+
+    // Dạng bảng phổ biến của NotebookLM: STT | Từ vựng | Loại từ | Nghĩa | Ngữ cảnh.
+    if (cells.length >= 4) {
+      const candidateWord = getKorean(cells[1]);
+      const candidateMeaning = cells[3];
+      if (candidateWord && candidateMeaning && !/^(?:ngữ cảnh|context)$/i.test(candidateMeaning)) {
+        add(cells[1], candidateMeaning);
+      }
+    }
+    continue;
+  }
+
+  // Dạng danh sách: 1. 제보하다 - Báo tin; hoặc **제보하다** (提報--) - Báo tin.
+  const plain = row
+    .replace(/^\s*(?:[-*•]\s*)?\d+\s*[.)、:]\s*/, "")
+    .replace(/^\s*[-*•]\s*/, "");
+  const match = plain.match(/^(.+?)\s+[-–—:：]\s+(.+)$/);
+  if (match) add(match[1], match[2]);
+}
+return output;
+`;
+
+        function getNotebookParserCode() {
+            const editor = document.getElementById("notebook-parser-code");
+            return editor && editor.value.trim() ? editor.value : NOTEBOOK_PARSER_DEFAULT_CODE;
+        }
+
+        function normalizeNotebookParserCode(code) {
+            let value = String(code || "").trim();
+            // Cho phép dán câu trả lời ChatGPT có bọc hàng rào markdown.
+            value = value.replace(/^```(?:javascript|js)?\s*/i, "").replace(/\s*```$/, "");
+            return value.trim();
+        }
+
+        function runNotebookParser(rawText, code = getNotebookParserCode()) {
+            // Mã ChatGPT phải trả về mảng [{ korean: "...", meaning: "..." }].
+            const normalizedCode = normalizeNotebookParserCode(code);
+            const parser = new Function("rawText", normalizedCode);
+            const parsed = parser(String(rawText || ""));
+            if (!Array.isArray(parsed)) throw new Error("Mã phải trả về một mảng các từ vựng.");
+            return parsed.map(item => ({
+                korean: String(item?.korean ?? item?.word ?? "").trim(),
+                meaning: String(item?.meaning ?? item?.vietnamese ?? item?.translation ?? "").trim()
+            })).filter(item => item.korean && item.meaning);
+        }
+
+        function parseNotebookVocabText(rawText) {
+            try {
+                const customCode = localStorage.getItem("notebookParserCustomCode");
+                if (customCode) return runNotebookParser(rawText, customCode);
+                const editor = document.getElementById("notebook-parser-code");
+                if (editor && editor.value.trim()) return runNotebookParser(rawText, editor.value);
+            } catch (error) {
+                console.error("Lỗi bộ xử lý NotebookLM tùy chỉnh:", error);
+                const status = document.getElementById("notebook-parser-status");
+                if (status) status.textContent = "⚠ Mã tùy chỉnh lỗi: " + error.message + ". Đang thử bộ xử lý mặc định.";
+            }
+            return parseNotebookVocabTextDefault(rawText);
+        }
+
+        function setNotebookParserStatus(message, isError = false) {
+            const status = document.getElementById("notebook-parser-status");
+            if (status) { status.textContent = message; status.style.color = isError ? "#c62828" : "#2e7d32"; }
+        }
+
+        function testNotebookParser() {
+            const source = document.getElementById("notebooklm-vocab")?.value || "";
+            try {
+                const result = runNotebookParser(source);
+                setNotebookParserStatus(`✓ Mã hợp lệ. Đọc được ${result.length} mục có cả từ Hàn và nghĩa Việt.`);
+                return result;
+            } catch (error) {
+                setNotebookParserStatus("✕ Lỗi: " + error.message, true);
+                alert("Mã xử lý chưa hợp lệ: " + error.message);
+                return null;
+            }
+        }
+
+        function applyNotebookParserCode() {
+            const editor = document.getElementById("notebook-parser-code");
+            try {
+                const code = normalizeNotebookParserCode(editor.value);
+                if (!code) throw new Error("Ô mã đang trống.");
+                const result = runNotebookParser(document.getElementById("notebooklm-vocab")?.value || "", code);
+                localStorage.setItem("notebookParserCustomCode", code);
+                editor.value = code;
+                setNotebookParserStatus(`✓ Đã áp dụng và lưu mã. Kiểm tra hiện tại đọc được ${result.length} mục. Tự động dùng cho những lần liên kết tiếp theo trên thiết bị này.`);
+                alert("Đã áp dụng bộ xử lý mới!");
+            } catch (error) {
+                setNotebookParserStatus("✕ Không áp dụng được: " + error.message, true);
+                alert("Không thể áp dụng mã: " + error.message);
+            }
+        }
+
+        function resetNotebookParserCode() {
+            localStorage.removeItem("notebookParserCustomCode");
+            const editor = document.getElementById("notebook-parser-code");
+            if (editor) editor.value = NOTEBOOK_PARSER_DEFAULT_CODE;
+            setNotebookParserStatus("Đã khôi phục bộ xử lý mặc định.");
+        }
+
+        function makeNotebookParserPrompt() {
+            const source = document.getElementById("notebooklm-vocab")?.value || "";
+            const currentCode = getNotebookParserCode();
+            const prompt = `Bạn là lập trình viên JavaScript chuyên xử lý văn bản từ NotebookLM. Hãy viết lại bộ phân tích danh sách từ vựng cho ứng dụng web của tôi.
+
+MỤC TIÊU:
+- Đọc nội dung NotebookLM có thể thay đổi định dạng: bảng Markdown, danh sách đánh số, bullet, từ Hàn kèm nghĩa Việt, tiêu đề/đoạn giới thiệu, cột loại từ/cấp độ/ngữ cảnh.
+- Trích xuất đúng từ/cụm từ tiếng Hàn và nghĩa tiếng Việt; không lấy số thứ tự, tiêu đề, loại từ, cấp độ, ngữ cảnh hoặc trích dẫn [1].
+- Cho phép cụm nhiều âm tiết/từ như 언성을 높이다 và giữ nguyên nghĩa đầy đủ có dấu phẩy, dấu hai chấm.
+- Loại bỏ markdown **, HTML, chữ Hán trong ngoặc sau từ Hàn nếu chúng không thuộc từ vựng. Không tự dịch hoặc tự bịa nghĩa.
+- Không tạo mục nếu thiếu từ Hàn hoặc thiếu nghĩa Việt; loại mục trùng.
+- Nếu không chắc cột nào là nghĩa, ưu tiên tiêu đề cột có chữ “Nghĩa tiếng Việt”, “Nghĩa”, “Ý nghĩa”, “Vietnamese meaning”; không lấy nhầm cột ngữ cảnh.
+
+YÊU CẦU ĐẦU RA BẮT BUỘC:
+Chỉ trả về MÃ JAVASCRIPT THUẦN, không markdown, không giải thích. Đây là phần thân hàm nhận biến rawText và phải return mảng: [{ korean: "제보하다", meaning: "Báo tin, cung cấp thông tin" }]. Không dùng thư viện ngoài, không truy cập DOM, không gọi API, không dùng eval. Mã phải chạy được bằng new Function("rawText", code).
+
+VĂN BẢN NOTEBOOKLM THỰC TẾ CẦN HỖ TRỢ:
+--- BẮT ĐẦU VĂN BẢN ---
+${source}
+--- KẾT THÚC VĂN BẢN ---
+
+MÃ ĐANG DÙNG (để tham khảo và cải tiến):
+--- BẮT ĐẦU MÃ ---
+${currentCode}
+--- KẾT THÚC MÃ ---
+
+Hãy chú ý định dạng thực tế ở trên và tạo mã chịu được các biến thể tương tự.`;
+            document.getElementById("notebook-parser-prompt").value = prompt;
+            setNotebookParserStatus("Đã tạo prompt từ văn bản NotebookLM hiện tại. Sao chép prompt và gửi cho ChatGPT.");
+        }
+
+        async function copyNotebookParserPrompt() {
+            const prompt = document.getElementById("notebook-parser-prompt")?.value || "";
+            if (!prompt) { makeNotebookParserPrompt(); }
+            const text = document.getElementById("notebook-parser-prompt")?.value || "";
+            try { await navigator.clipboard.writeText(text); setNotebookParserStatus("✓ Đã sao chép prompt."); }
+            catch (_) { document.getElementById("notebook-parser-prompt").focus(); document.getElementById("notebook-parser-prompt").select(); setNotebookParserStatus("Hãy nhấn giữ và chọn Sao chép prompt."); }
+        }
+
+        function initNotebookParserEditor() {
+            const editor = document.getElementById("notebook-parser-code");
+            if (!editor) return;
+            const saved = localStorage.getItem("notebookParserCustomCode");
+            if (saved) {
+                try {
+                    new Function("rawText", normalizeNotebookParserCode(saved));
+                    editor.value = normalizeNotebookParserCode(saved);
+                    setNotebookParserStatus("Đang dùng mã xử lý tùy chỉnh đã lưu trên thiết bị này.");
+                    return;
+                } catch (error) {
+                    // Giữ bản lỗi để người dùng có thể xem lại, nhưng không để nó khóa chức năng.
+                    try { localStorage.setItem("notebookParserBrokenCodeBackup", saved); } catch (_) {}
+                    localStorage.removeItem("notebookParserCustomCode");
+                    editor.value = NOTEBOOK_PARSER_DEFAULT_CODE;
+                    setNotebookParserStatus("⚠ Mã tùy chỉnh cũ bị lỗi cú pháp (" + error.message + "). Đã chuyển về bộ xử lý mặc định; bản cũ được sao lưu.", true);
+                    return;
+                }
+            }
+            editor.value = NOTEBOOK_PARSER_DEFAULT_CODE;
+            setNotebookParserStatus("Đang dùng bộ xử lý mặc định.");
+        }
+        document.addEventListener("DOMContentLoaded", initNotebookParserEditor);
+
+        // ===== PHÂN TÍCH TỪ VỰNG NOTEBOOKLM (BẢNG MARKDOWN + DẠNG DÒNG) =====
+        function parseNotebookVocabTextDefault(rawText) {
+            const result = [];
+            const seen = new Set();
+
+            const cleanCell = value => String(value || "")
+                .replace(/\*\*/g, "")
+                .replace(/<[^>]*>/g, "")
+                .replace(/\[[\d,\s]+\]/g, "")
+                .replace(/\s+/g, " ")
+                .trim();
+
+            const addEntry = (rawKorean, rawMeaning) => {
+                let korean = cleanCell(rawKorean)
+                    .replace(/^\s*(?:[-*•]\s*)?\d+\s*[.)、]\s*/, "")
+                    .replace(/\([^)]*\)/g, "")
+                    .replace(/[（(][^）)]*[）)]/g, "")
+                    .replace(/[：:]\s*$/, "")
+                    .trim();
+
+                // Chỉ giữ cụm tiếng Hàn; cho phép cụm nhiều từ như "언성을 높이다".
+                const koreanMatch = korean.match(/[\p{Script=Hangul}]+(?:\s+[\p{Script=Hangul}]+)*/u);
+                korean = koreanMatch ? koreanMatch[0].trim() : "";
+
+                const meaning = cleanCell(rawMeaning)
+                    .replace(/^\s*[-–—:]\s*/, "")
+                    .replace(/\s*\|\s*$/, "")
+                    .trim();
+
+                if (!korean || !meaning || seen.has(korean)) return;
+                seen.add(korean);
+                result.push({ korean, meaning });
+            };
+
+            String(rawText || "").split(/\r?\n/).forEach(line => {
+                const trimmed = line.trim();
+                if (!trimmed || /^\|?\s*:?-{3,}/.test(trimmed)) return;
+
+                // Bảng Markdown của NotebookLM: STT | Từ vựng | Loại từ | Nghĩa | Ngữ cảnh
+                if (trimmed.includes("|")) {
+                    const cells = trimmed.replace(/^\|/, "").replace(/\|$/, "").split("|").map(cleanCell);
+                    if (cells.length >= 4) {
+                        const headerText = cells.join(" ").toLowerCase();
+                        if (/từ vựng|nghĩa tiếng việt|ngữ cảnh/.test(headerText)) return;
+                        addEntry(cells[1], cells[3]);
+                        return;
+                    }
+                }
+
+                // Dạng đơn giản: 제보하다 - Báo tin hoặc 제보하다: Báo tin
+                const plain = trimmed.replace(/^\s*(?:[-*•]\s*)?\d+\s*[.)、]\s*/, "");
+                const separator = plain.match(/\s[-–—:]\s/);
+                if (separator) {
+                    const index = separator.index;
+                    addEntry(plain.slice(0, index), plain.slice(index + separator[0].length));
+                }
+            });
+
+            return result;
+        }
+
         function linkVocabToSubtitles() {
             const vocabText = document.getElementById("notebooklm-vocab").value;
-            const vocabArray = vocabText
-                .split("\n")
-                .map(v => {
-                    const match = v.match(/[\p{Script=Hangul}]+(?:\s+[\p{Script=Hangul}]+)*/gu);
-                    const korean = match ? match[0].trim() : "";
-                    const meaningMatch = v.split(":").slice(1).join(":").trim();
-                    const meaning = meaningMatch ? meaningMatch : "";
-                    return korean ? { korean, meaning} : null;
-               })
-                .filter(v => v);
+            const vocabArray = parseNotebookVocabText(vocabText);
             const container = document.getElementById("linked-vocab-list");
             container.innerHTML = "";
 
+            if (!vocabArray.length) {
+                container.textContent = "Không tìm thấy từ vựng hợp lệ. Hãy kiểm tra bảng có cột Từ vựng và Nghĩa tiếng Việt.";
+                return;
+            }
+
+            let linkedCount = 0;
             vocabArray.forEach(word => {
-                const matchIndex = findBestSubtitleIndex(word.korean);  
+                const matchIndex = findBestSubtitleIndex(word.korean);
 
-                if (matchIndex !== -1) {  
-                    let existing = vocabList.find(v => v.word === word.korean);  
+                if (matchIndex !== -1) {
+                    linkedCount++;
+                    let existing = vocabList.find(v => v.word === word.korean);
 
-                    if (!existing) {  
-                        vocabList.push({  
-                            word: word.korean,  
-                            meaning: word.meaning,  
-                            savedIndexes: [matchIndex],  
-                            isLinked: true  
-                        });  
-                    } else {  
-                        existing.meaning = word.meaning;  
-                        existing.savedIndexes = [matchIndex];  
-                        existing.isLinked = true;  
-                    }  
+                    if (!existing) {
+                        vocabList.push({
+                            word: word.korean,
+                            meaning: word.meaning,
+                            savedIndexes: [matchIndex],
+                            isLinked: true
+                        });
+                    } else {
+                        existing.meaning = word.meaning;
+                        existing.savedIndexes = [matchIndex];
+                        existing.isLinked = true;
+                    }
                 }
 
                 const div = document.createElement("div");
-                div.textContent = `${word.korean} ${word.meaning ? `- ${word.meaning}` : ""}`;
+                div.textContent = `${word.korean} - ${word.meaning}`;
                 div.className = "clickable-vocab";
 
                 div.onclick = () => {
-                    const matchIndex = findBestSubtitleIndex(word.korean);
-                    if (matchIndex !== -1) {
-                        youtubePlayer.seekTo(subtitleData[matchIndex].startTime, true);
-                        youtubePlayer.playVideo();
-                        highlightSubtitle(matchIndex);
+                    const index = findBestSubtitleIndex(word.korean);
+                    if (index !== -1) {
+                        if (youtubePlayer) {
+                            youtubePlayer.seekTo(subtitleData[index].startTime, true);
+                            youtubePlayer.playVideo();
+                        }
+                        highlightSubtitle(index);
                         if (vocabTTSMode) {
                             readTextDual(`${word.korean} - ${word.meaning}`, null, VOCAB_TTS_RATE);
-                       }
-                   } else {
-                        alert("Không tìm thấy từ gần giống trong phụ đề");
-                   }
-               };
+                        }
+                    } else {
+                        alert("Không tìm thấy từ gần giống trong phụ đề. Từ vẫn được giữ trong danh sách NotebookLM.");
+                    }
+                };
                 container.appendChild(div);
-           });
+            });
+
             saveToHistory(currentVideoUrl, null, vocabText);
-       }
+            saveVocabToHistory();
+            displayVocabList();
+            alert(`Đã đọc ${vocabArray.length} từ có nghĩa tiếng Việt. Liên kết được ${linkedCount} từ với phụ đề.`);
+        }
 
         function checkManualSeek() {
             if (!youtubePlayer) return;
@@ -2301,30 +2611,18 @@ function showSRTPanel() {
        }
 
         function getNotebookVocabInfo(word) {
-    const notebookText = document.getElementById("notebooklm-vocab").value;
-    if (!notebookText.trim()) return null;
-    
-    const lines = notebookText.split('\n');
-    for (const line of lines) {
-        // Tìm dòng có chứa từ khóa
-        if (line.includes(word)) {
-            const parts = line.split(':');
-            if (parts.length >= 2) {
-                return {
-                    korean: parts[0].trim(),
-                    meaning: parts.slice(1).join(':').trim()
-               };
-           } else {
-                // Nếu không có dấu :, coi toàn bộ là từ
-                return {
-                    korean: line.trim(),
-                    meaning: ''
-               };
-           }
-       }
-   }
-    return null;
-}
+            const notebookText = document.getElementById("notebooklm-vocab")?.value || "";
+            if (!notebookText.trim()) return null;
+
+            const target = String(word || "").replace(/\s+/g, " ").trim();
+            const entries = parseNotebookVocabText(notebookText);
+            const found = entries.find(entry =>
+                entry.korean === target ||
+                entry.korean.replace(/\s+/g, "") === target.replace(/\s+/g, "")
+            );
+
+            return found ? { korean: found.korean, meaning: found.meaning } : null;
+        }
 
         function displayVocabInfo(word, existingVocab, notebookVocab) {
       const container = document.getElementById("vocab-info-display");
