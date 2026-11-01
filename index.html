@@ -1079,7 +1079,8 @@ body.custom-fullscreen-active {
     <h3>Danh sách từ vựng đã tra</h3>
     <h3>Danh sách từ NotebookLM</h3>
     <textarea id="notebooklm-vocab" rows="10" placeholder="Dán danh sách từ ở đây..."></textarea>
-    <div id="notebook-parser-tools" style="margin:12px 0;padding:12px;border:1px solid #7c9bce;border-radius:10px;background:#f4f8ff;">
+    <button type="button" id="toggle-notebook-parser-tools" aria-expanded="false" aria-controls="notebook-parser-tools" onclick="toggleNotebookParserTools()" style="margin:10px 0 0;background:#607d8b;color:white;border:0;border-radius:8px;padding:10px 14px;width:100%;font-size:15px;">⚙️ Hiện bộ xử lý NotebookLM (khi cần chỉnh sửa)</button>
+    <div id="notebook-parser-tools" hidden style="display:none;margin:12px 0;padding:12px;border:1px solid #7c9bce;border-radius:10px;background:#f4f8ff;">
         <strong>🧩 Bộ xử lý NotebookLM có thể chỉnh sửa</strong>
         <p style="margin:6px 0;font-size:13px;line-height:1.5;">Nếu NotebookLM thay đổi cách trình bày, hãy tạo prompt bên dưới để hỏi ChatGPT viết lại bộ phân tích. Sau đó dán mã ChatGPT trả về vào ô mã và nhấn <b>Áp dụng</b>. Mã mới chỉ dùng trên trình duyệt này.</p>
         <div style="display:flex;flex-wrap:wrap;gap:8px;margin:8px 0;">
@@ -1397,6 +1398,19 @@ for (const originalLine of lines) {
 }
 return output;
 `;
+
+        function toggleNotebookParserTools() {
+            const panel = document.getElementById("notebook-parser-tools");
+            const button = document.getElementById("toggle-notebook-parser-tools");
+            if (!panel || !button) return;
+            const isHidden = panel.hidden || panel.style.display === "none";
+            panel.hidden = !isHidden;
+            panel.style.display = isHidden ? "block" : "none";
+            button.setAttribute("aria-expanded", isHidden ? "true" : "false");
+            button.textContent = isHidden
+                ? "Ẩn bộ xử lý NotebookLM"
+                : "⚙️ Hiện bộ xử lý NotebookLM (khi cần chỉnh sửa)";
+        }
 
         function getNotebookParserCode() {
             const editor = document.getElementById("notebook-parser-code");
