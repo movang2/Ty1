@@ -3236,18 +3236,38 @@ Hãy chú ý định dạng thực tế ở trên và tạo mã chịu được 
                 } catch (e) {}
             }
 
-            const tolerance = 0.25;
-            const currentAnchorIndex = anchors.findIndex(anchor =>
-                Math.abs(Number(anchor.startTime) - currentTime) <= tolerance
-            );
+            // Xác định câu đang phát bằng toàn bộ khoảng [startTime, endTime),
+            // không chỉ bằng sai số 0,25 giây quanh thời điểm bắt đầu.
+            const currentAnchorIndex = anchors.findIndex((anchor, index) => {
+                const start = Number(anchor.startTime) || 0;
+                let end = Number(anchor.endTime);
+
+                // Dữ liệu cũ/thiếu endTime: dùng mốc kế tiếp làm giới hạn,
+                // nếu không có thì dự phòng 2 giây.
+                if (!Number.isFinite(end) || end <= start) {
+                    const nextStart = Number(anchors[index + 1]?.startTime);
+                    end = Number.isFinite(nextStart) && nextStart > start
+                        ? nextStart
+                        : start + 2;
+                }
+
+                return currentTime >= start && currentTime < end;
+            });
+
             let previousIndex = -1;
             let nextIndex = -1;
 
             if (currentAnchorIndex >= 0) {
+                // Đang ở trong câu này: Trước/Sau phải chuyển sang câu khác,
+                // không coi chính câu hiện tại là mốc trước.
                 previousIndex = currentAnchorIndex - 1;
                 nextIndex = currentAnchorIndex + 1;
             } else {
-                nextIndex = anchors.findIndex(anchor => Number(anchor.startTime) > currentTime);
+                // Đang ở khoảng trống giữa hai câu: lấy mốc gần nhất đã qua
+                // làm mốc Trước và mốc sắp tới làm mốc Sau.
+                nextIndex = anchors.findIndex(anchor =>
+                    Number(anchor.startTime) > currentTime
+                );
                 if (nextIndex < 0) nextIndex = anchors.length;
                 previousIndex = nextIndex - 1;
             }
