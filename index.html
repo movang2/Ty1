@@ -919,7 +919,7 @@ body.custom-fullscreen-active {
                 <button id="listening-practice-btn" class="btn-vid-rewind" onclick="toggleListeningPractice()">🎧 Luyện nghe</button>
                 <span style="display:inline-flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;color:#555;">
                     Hiển thị <input id="subtitle-display-lines" type="number" min="1" max="50" value="3" onchange="updateSubtitleDisplayLineCount(this.value)" style="width:52px;padding:4px;border:1px solid #ccc;border-radius:5px;"> dòng
-                    <button type="button" onclick="resetSubtitleDisplayLineCount()" style="width:auto;padding:5px 9px;background:#607d8b;color:white;border:0;border-radius:5px;cursor:pointer;">Mặc định (5)</button>
+                    <button type="button" onclick="resetSubtitleDisplayLineCount()" style="width:auto;padding:5px 9px;background:#607d8b;color:white;border:0;border-radius:5px;cursor:pointer;">Mặc định (3)</button>
                 </span>
                 <span style="display:inline-flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;color:#555;">
                     Gom <input id="listening-practice-lines" type="number" min="1" max="50" value="1" style="width:52px;padding:4px;border:1px solid #ccc;border-radius:5px;"> dòng
@@ -1217,7 +1217,7 @@ function showSRTPanel() {
         let subtitleData = window.subtitleData;
         let currentSubtitleIndex = -1;
         let vocabTimeNavigationEnabled = false;
-        const DEFAULT_SUBTITLE_DISPLAY_LINE_COUNT = 5;
+        const DEFAULT_SUBTITLE_DISPLAY_LINE_COUNT = 3;
         let subtitleDisplayLineCount = DEFAULT_SUBTITLE_DISPLAY_LINE_COUNT;
         let isSpeaking = false;
         let ttsSpeed = 1.5;
@@ -3631,14 +3631,15 @@ Hãy chú ý định dạng thực tế ở trên và tạo mã chịu được 
                     return;
                 }
 
-                  // ==== Tính năng: Khi gặp từ vựng đã liên kết ====
-                  // Tạm dừng video, đọc nghĩa tiếng Việt, rồi đọc câu phụ đề như bình thường.
+                  // ==== Tính năng: Khi gặp các từ vựng đã liên kết ====
+                  // Đọc lần lượt Hàn → nghĩa Việt, nghỉ 1 giây giữa các từ,
+                  // rồi đọc câu phụ đề tiếng Việt.
                 if (vocabPauseTTSEnabled
                     && autoVocabs.length > 0
                     && currentSubtitleIndex !== lastVocabPauseIndex
                     && !isVocabPauseSpeaking) {
                     lastVocabPauseIndex = currentSubtitleIndex;
-                     triggerVocabPauseTTS(autoVocabs[0], nextSubtitle);
+                     triggerVocabPauseTTS(autoVocabs, nextSubtitle);
                     return; // Bỏ qua đọc phụ đề trong vòng này
                 }
 
@@ -3657,8 +3658,8 @@ Hãy chú ý định dạng thực tế ở trên và tạo mã chịu được 
        }
 
         // ==== TÍNH NĂNG: Đọc từ Hàn, nghĩa Việt, rồi đọc phụ đề Việt ====
-        function triggerVocabPauseTTS(vocab, subtitle) {
-            if (!youtubePlayer || !vocab || !subtitle) return;
+        function triggerVocabPauseTTS(vocabs, subtitle) {
+            if (!youtubePlayer || !Array.isArray(vocabs) || vocabs.length === 0 || !subtitle) return;
             try {
                 speechSynthesis.cancel();
             } catch (e) {}
@@ -3675,7 +3676,6 @@ Hãy chú ý định dạng thực tế ở trên và tạo mã chịu được 
                  vocabPauseProgrammaticPause = false;
              }
 
-             const vietnameseMeaning = getVietnameseVocabMeaning(vocab);
               const resumeWithSubtitleTTS = () => {
                  isVocabPauseSpeaking = false;
                  vocabPauseProgrammaticPause = false;
@@ -3704,24 +3704,40 @@ Hãy chú ý định dạng thực tế ở trên và tạo mã chịu được 
                   }
              };
 
-              const speakMeaningThenResume = () => {
-                  if (vietnameseMeaning) {
-                      speakVietnamese(vietnameseMeaning, () => {
-                          // Chờ thiết bị kết thúc giọng đọc nghĩa trước câu phụ đề.
-                          setTimeout(resumeWithSubtitleTTS, VOCAB_TTS_RESUME_DELAY_MS);
-                      }, VOCAB_TTS_RATE);
-                  } else {
+              const speakVocabularyAt = (index) => {
+                  if (index >= vocabs.length) {
+                      // Nghỉ một nhịp sau từ cuối cùng trước khi đọc phụ đề hiện tại.
                       setTimeout(resumeWithSubtitleTTS, VOCAB_TTS_RESUME_DELAY_MS);
+                      return;
+                  }
+
+                  const vocab = vocabs[index];
+                  const vietnameseMeaning = getVietnameseVocabMeaning(vocab);
+                  const speakMeaningThenNext = () => {
+                      const continueToNextVocab = () => {
+                          if (index + 1 >= vocabs.length) {
+                              setTimeout(resumeWithSubtitleTTS, VOCAB_TTS_RESUME_DELAY_MS);
+                          } else {
+                              setTimeout(() => speakVocabularyAt(index + 1), VOCAB_TTS_RESUME_DELAY_MS);
+                          }
+                      };
+                      if (vietnameseMeaning) {
+                          speakVietnamese(vietnameseMeaning, continueToNextVocab, VOCAB_TTS_RATE);
+                      } else {
+                          continueToNextVocab();
+                      }
+                  };
+
+                  const koreanWord = String(vocab?.word || "").trim();
+                  if (koreanWord) {
+                      // Đọc từng từ bằng giọng Hàn, rồi mới đọc nghĩa tiếng Việt.
+                      readTextDual(koreanWord, speakMeaningThenNext, VOCAB_TTS_RATE);
+                  } else {
+                      speakMeaningThenNext();
                   }
               };
 
-              const koreanWord = String(vocab.word || "").trim();
-              if (koreanWord) {
-                  // Đọc từ vựng bằng giọng Hàn trước, sau đó mới đọc nghĩa tiếng Việt.
-                  readTextDual(koreanWord, speakMeaningThenResume, VOCAB_TTS_RATE);
-              } else {
-                  speakMeaningThenResume();
-              }
+              speakVocabularyAt(0);
         }
 
         function toggleVocabPauseTTS() {
