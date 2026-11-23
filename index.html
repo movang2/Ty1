@@ -918,7 +918,7 @@ body.custom-fullscreen-active {
                 <span class="ctrl-group-label">🎬 Video</span>
                 <button id="listening-practice-btn" class="btn-vid-rewind" onclick="toggleListeningPractice()">🎧 Luyện nghe</button>
                 <span style="display:inline-flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;color:#555;">
-                    Hiển thị <input id="subtitle-display-lines" type="number" min="1" max="50" value="5" onchange="updateSubtitleDisplayLineCount(this.value)" style="width:52px;padding:4px;border:1px solid #ccc;border-radius:5px;"> dòng
+                    Hiển thị <input id="subtitle-display-lines" type="number" min="1" max="50" value="3" onchange="updateSubtitleDisplayLineCount(this.value)" style="width:52px;padding:4px;border:1px solid #ccc;border-radius:5px;"> dòng
                     <button type="button" onclick="resetSubtitleDisplayLineCount()" style="width:auto;padding:5px 9px;background:#607d8b;color:white;border:0;border-radius:5px;cursor:pointer;">Mặc định (5)</button>
                 </span>
                 <span style="display:inline-flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;color:#555;">
@@ -1248,6 +1248,7 @@ function showSRTPanel() {
         let isVocabTTSPaused = false;
         let pausedVocabIndex = -1;
         const VOCAB_TTS_RATE = 0.85;
+        const VOCAB_TTS_RESUME_DELAY_MS = 1000;
         let vocabTTSRunToken = 0;
         let vocabDisplayMode = false;
         // Các mốc phụ đề được ghim khi người dùng nhấp trực tiếp vào từ.
@@ -3630,14 +3631,14 @@ Hãy chú ý định dạng thực tế ở trên và tạo mã chịu được 
                     return;
                 }
 
-                 // ==== Tính năng: Khi gặp từ vựng đã liên kết ====
-                 // Tạm dừng video, đọc nghĩa tiếng Việt, rồi phát tiếp từ đầu câu đó
+                  // ==== Tính năng: Khi gặp từ vựng đã liên kết ====
+                  // Tạm dừng video, đọc nghĩa tiếng Việt, rồi đọc câu phụ đề như bình thường.
                 if (vocabPauseTTSEnabled
                     && autoVocabs.length > 0
                     && currentSubtitleIndex !== lastVocabPauseIndex
                     && !isVocabPauseSpeaking) {
                     lastVocabPauseIndex = currentSubtitleIndex;
-                     triggerVocabPauseTTS(autoVocabs[0], nextSubtitle.startTime);
+                     triggerVocabPauseTTS(autoVocabs[0], nextSubtitle);
                     return; // Bỏ qua đọc phụ đề trong vòng này
                 }
 
@@ -3655,9 +3656,9 @@ Hãy chú ý định dạng thực tế ở trên và tạo mã chịu được 
            }
        }
 
-        // ==== TÍNH NĂNG: Tạm dừng & Đọc nghĩa từ vựng bằng tiếng Việt ====
-        function triggerVocabPauseTTS(vocab, subtitleStartTime) {
-            if (!youtubePlayer || !vocab) return;
+        // ==== TÍNH NĂNG: Đọc từ Hàn, nghĩa Việt, rồi đọc phụ đề Việt ====
+        function triggerVocabPauseTTS(vocab, subtitle) {
+            if (!youtubePlayer || !vocab || !subtitle) return;
             try {
                 speechSynthesis.cancel();
             } catch (e) {}
@@ -3666,7 +3667,7 @@ Hãy chú ý định dạng thực tế ở trên và tạo mã chịu được 
                  onlineTTSVoice = null;
              }
             isVocabPauseSpeaking = true;
-             vocabPauseSubtitleStartTime = Number(subtitleStartTime);
+              vocabPauseSubtitleStartTime = Number(subtitle.startTime);
             try {
                  vocabPauseProgrammaticPause = true;
                 youtubePlayer.pauseVideo();
@@ -3675,32 +3676,52 @@ Hãy chú ý định dạng thực tế ở trên và tạo mã chịu được 
              }
 
              const vietnameseMeaning = getVietnameseVocabMeaning(vocab);
-             const resumeVideo = () => {
+              const resumeWithSubtitleTTS = () => {
                  isVocabPauseSpeaking = false;
                  vocabPauseProgrammaticPause = false;
-                 if (!vocabPauseTTSEnabled || !youtubePlayer) {
+                  if (!youtubePlayer) {
                      vocabPauseSubtitleStartTime = null;
                      return;
                  }
                  try {
-                     // TTS có thể làm thời gian video lệch thêm một chút.
-                     // Luôn quay về đúng đầu câu chứa từ vựng trước khi phát tiếp.
-                     const startTime = Number.isFinite(Number(subtitleStartTime))
-                         ? Number(subtitleStartTime)
+                      // Quay về đầu câu để TTS và video tiếp tục từ cùng một vị trí.
+                      const startTime = Number.isFinite(Number(subtitle.startTime))
+                          ? Number(subtitle.startTime)
                          : vocabPauseSubtitleStartTime;
                      vocabPauseSubtitleStartTime = null;
                      if (Number.isFinite(startTime)) youtubePlayer.seekTo(startTime, true);
                      youtubePlayer.playVideo();
                  } catch (e) {}
+
+                  const textToRead = String(subtitle.vietnameseText || "").trim();
+                  if (textToRead) {
+                      isSpeaking = true;
+                      speakVietnamese(textToRead, () => {
+                          isSpeaking = false;
+                      }, ttsSpeed);
+                      lastSpokenText = textToRead;
+                      lastSpokenTime = Date.now();
+                  }
              };
 
-             if (!vietnameseMeaning) {
-                 resumeVideo();
-                 return;
-             }
+              const speakMeaningThenResume = () => {
+                  if (vietnameseMeaning) {
+                      speakVietnamese(vietnameseMeaning, () => {
+                          // Chờ thiết bị kết thúc giọng đọc nghĩa trước câu phụ đề.
+                          setTimeout(resumeWithSubtitleTTS, VOCAB_TTS_RESUME_DELAY_MS);
+                      }, VOCAB_TTS_RATE);
+                  } else {
+                      setTimeout(resumeWithSubtitleTTS, VOCAB_TTS_RESUME_DELAY_MS);
+                  }
+              };
 
-             // Chỉ đọc nghĩa tiếng Việt của từ; không đọc lại từ tiếng Hàn.
-             speakVietnamese(vietnameseMeaning, resumeVideo, VOCAB_TTS_RATE);
+              const koreanWord = String(vocab.word || "").trim();
+              if (koreanWord) {
+                  // Đọc từ vựng bằng giọng Hàn trước, sau đó mới đọc nghĩa tiếng Việt.
+                  readTextDual(koreanWord, speakMeaningThenResume, VOCAB_TTS_RATE);
+              } else {
+                  speakMeaningThenResume();
+              }
         }
 
         function toggleVocabPauseTTS() {
